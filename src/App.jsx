@@ -6,8 +6,7 @@ import {
 } from 'recharts'
 
 const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
-const SUPABASE_KEY = 'sb_publishable_2wr1CLtay4Y_wXvv3exiSQ_-_eYnlmW'
-
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJua2Vzc2h6c3RyeXpmb2lwcmVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5ODY1NjcsImV4cCI6MjA5NTU2MjU2N30.2XodPoFyEaUSLD7fW2HXzl0qJC6ohdKFIHLdgFrZzKI'
 const headers = {
   'Authorization': `Bearer ${SUPABASE_KEY}`,
   'apikey': SUPABASE_KEY,
