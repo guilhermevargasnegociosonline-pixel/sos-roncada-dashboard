@@ -6,7 +6,7 @@ import {
 } from 'recharts'
 
 const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
-const SUPABASE_KEY = 'sb_secret_ed7s7YtUnrKpklEbGrkH-Q_vL8TQcr9'
+const SUPABASE_KEY = 'sb_publishable_2wr1CLtay4Y_wXvv3exiSQ_-_eYnlmW'
 
 const headers = {
   'Authorization': `Bearer ${SUPABASE_KEY}`,
