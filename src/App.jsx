@@ -144,8 +144,11 @@ export default function App() {
   const frasesCopy = (() => { try { const f = JSON.parse(data.frases_copy || '{}'); return { semana: f.semana || [], mes: f.mes || [] } } catch { return { semana: [], mes: [] } } })()
 
   const totalBase = (data.total_crise || 0) + (data.total_estaveis || 0) + (data.total_progresso || 0) + (data.total_inativos || 0)
-  const pctCCC = data.total_ativos > 0 ? Math.round(((data.ccc_crise + data.ccc_estaveis + data.ccc_progresso) / data.total_ativos) * 100) : 0
-  const pctResgate = 100 - pctCCC
+ const totalCCC = (data.ccc_crise || 0) + (data.ccc_estaveis || 0) + (data.ccc_progresso || 0)
+const totalResgate = (data.resgate_crise || 0) + (data.resgate_estaveis || 0) + (data.resgate_progresso || 0)
+const totalProdutos = totalCCC + totalResgate
+const pctCCC = totalProdutos > 0 ? Math.round((totalCCC / totalProdutos) * 100) : 0
+const pctResgate = 100 - pctCCC
 
   const mesesHistorico = historico.length > 1 ? historico.map(h => ({ ...h, semana: h.semana?.split('-W')[1] ? `S${h.semana.split('-W')[1]}` : h.semana })) : []
 
