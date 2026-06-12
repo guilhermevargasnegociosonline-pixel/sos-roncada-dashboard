@@ -2,12 +2,27 @@ import React, { useEffect, useState } from 'react'
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell
+  ResponsiveContainer, AreaChart, Area, Cell
 } from 'recharts'
 
 const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJua2Vzc2h6c3RyeXpmb2lwcmVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5ODY1NjcsImV4cCI6MjA5NTU2MjU2N30.2XodPoFyEaUSLD7fW2HXzl0qJC6ohdKFIHLdgFrZzKI'
 const H = { 'Authorization': `Bearer ${SUPABASE_KEY}`, 'apikey': SUPABASE_KEY }
+
+// Custo claude-sonnet-4-6: $3/MTok input + $15/MTok output
+// Média estimada: ~800 tokens input + ~300 tokens output por conversa
+const CUSTO_INPUT_POR_TOKEN  = 3 / 1_000_000
+const CUSTO_OUTPUT_POR_TOKEN = 15 / 1_000_000
+const TOKENS_INPUT_POR_CONV  = 800
+const TOKENS_OUTPUT_POR_CONV = 300
+const CUSTO_POR_CONVERSA     = (TOKENS_INPUT_POR_CONV * CUSTO_INPUT_POR_TOKEN) + (TOKENS_OUTPUT_POR_CONV * CUSTO_OUTPUT_POR_TOKEN)
+const USD_TO_BRL              = 5.70
+
+function calcCusto(conversas) {
+  const usd = conversas * CUSTO_POR_CONVERSA
+  const brl = usd * USD_TO_BRL
+  return { usd: usd.toFixed(2), brl: brl.toFixed(2) }
+}
 
 const T = {
   bg: '#0f1117', card: '#161b27', elevated: '#1e2535',
@@ -37,8 +52,6 @@ function gerarMeses() {
   const n = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
   return Array.from({ length: 12 }, (_, i) => ({ value: `${ano}-${String(i + 1).padStart(2, '0')}`, label: `${n[i]} ${ano}` }))
 }
-
-// ── ATOMS ────────────────────────────────────────────────────────────────────
 
 function KPI({ label, value, sub, color, icon }) {
   return (
@@ -87,10 +100,7 @@ function Badge({ children, color, bg }) {
 }
 
 function Divider() { return <div style={{ borderTop: `1px solid ${T.border}`, margin: '16px 0' }} /> }
-
-function Empty({ msg }) {
-  return <div style={{ textAlign: 'center', padding: '28px 0', color: T.t3, fontSize: 12 }}>{msg || 'Aguardando dados da análise'}</div>
-}
+function Empty({ msg }) { return <div style={{ textAlign: 'center', padding: '28px 0', color: T.t3, fontSize: 12 }}>{msg || 'Aguardando dados da análise'}</div> }
 
 function Tabs({ tabs, active, onChange, mobile }) {
   return (
@@ -157,9 +167,7 @@ function FantasmasTable({ fantasmas, copied, onCopy, mobile }) {
                 <td style={{ padding: '10px 10px', color: T.t1, fontWeight: 500 }}>{a.nome || '—'}</td>
                 <td style={{ padding: '10px 10px' }}><ProdBadge p={a.produto} /></td>
                 <td style={{ padding: '10px 10px', color: T.t3, fontFamily: 'monospace', fontSize: 11 }}>{a.telefone}</td>
-                <td style={{ padding: '10px 10px' }}>
-                  <span style={{ color: dias > 7 ? T.red : T.amber, fontWeight: 600 }}>{dias !== null ? `${dias}d` : '—'}</span>
-                </td>
+                <td style={{ padding: '10px 10px' }}><span style={{ color: dias > 7 ? T.red : T.amber, fontWeight: 600 }}>{dias !== null ? `${dias}d` : '—'}</span></td>
                 <td style={{ padding: '10px 10px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <StatusDot dias={dias || 0} />
@@ -190,6 +198,7 @@ export default function App() {
   const [todasSemanas] = useState(gerarSemanas)
   const [todosMeses] = useState(gerarMeses)
   const [fantasmas, setFantasmas] = useState([])
+  const [alunosSemProgresso, setAlunosSemProgresso] = useState([])
   const [copied, setCopied] = useState(null)
 
   useEffect(() => {
@@ -200,11 +209,27 @@ export default function App() {
           fetch(`${SUPABASE_URL}/alunos?ativo=eq.true&select=id,nome,telefone,produto,criado_em`, { headers: H }).then(r => r.json()),
           fetch(`${SUPABASE_URL}/conversas?select=aluno_id`, { headers: H }).then(r => r.json()),
         ])
-        if (rAnal?.length > 0) { setAllAnalises(rAnal); setData(rAnal[0]); setPeriodoSel(rAnal[0].semana || '') }
+
+        const analises = (rAnal || []).filter(r => (r.total_ativos || 0) > 0)
+        if (analises.length > 0) {
+          setAllAnalises(analises)
+          setData(analises[0])
+          setPeriodoSel(analises[0].semana || '')
+        }
+
         const comConv = new Set((rConv || []).map(c => c.aluno_id))
-        const sem = (rAlunos || []).filter(a => !comConv.has(a.id))
+        const semConv = (rAlunos || []).filter(a => !comConv.has(a.id))
         setAlunos(rAlunos || [])
-        setFantasmas(sem)
+        setFantasmas(semConv)
+
+        // Alunos sem progresso: alunos ativos que nunca tiveram conversa de progresso
+        // Usamos como proxy: cadastrados há +7 dias e com poucas conversas
+        const semProgresso = (rAlunos || []).filter(a => {
+          const dias = a.criado_em ? Math.floor((Date.now() - new Date(a.criado_em)) / 86400000) : 0
+          return dias > 7 && comConv.has(a.id)
+        })
+        setAlunosSemProgresso(semProgresso)
+
       } catch (e) { console.error(e) }
       finally { setLoading(false) }
     }
@@ -244,11 +269,32 @@ export default function App() {
   const pctCCC = totalP > 0 ? Math.round((totalCCC / totalP) * 100) : 0
   const pctResgate = 100 - pctCCC
 
+  // Custo real desta semana
+  const convSemana = data?.total_conversas || 0
+  const custoSemana = calcCusto(convSemana)
+
+  // Histórico de conversas e custo por semana
   const historico = allAnalises.slice(0, 10).reverse().map(r => ({
     s: r.semana?.split('-W')[1] ? `S${r.semana.split('-W')[1]}` : r.semana?.slice(-2),
-    conv: r.total_conversas || 0, ativos: r.total_ativos || 0,
-    crise: r.total_crise || 0, prog: r.total_progresso || 0,
+    conv: r.total_conversas || 0,
+    ativos: r.total_ativos || 0,
+    crise: r.total_crise || 0,
+    prog: r.total_progresso || 0,
+    custo: parseFloat(calcCusto(r.total_conversas || 0).brl),
   }))
+
+  // Projeções de escala
+  const projecoes = [
+    { leads: data?.total_ativos || 24, label: 'Atual' },
+    { leads: Math.round((data?.total_ativos || 24) * 2.5), label: '2.5x' },
+    { leads: Math.round((data?.total_ativos || 24) * 5), label: '5x' },
+    { leads: Math.round((data?.total_ativos || 24) * 10), label: '10x' },
+    { leads: Math.round((data?.total_ativos || 24) * 20), label: '20x' },
+  ].map(p => {
+    const convProj = Math.round((convSemana / Math.max(data?.total_ativos || 1, 1)) * p.leads)
+    const c = calcCusto(convProj)
+    return { ...p, conv: convProj, custoBRL: parseFloat(c.brl), custoUSD: parseFloat(c.usd) }
+  })
 
   const diasEng  = [{ d:'Seg',v:18},{ d:'Ter',v:24},{ d:'Qua',v:31},{ d:'Qui',v:27},{ d:'Sex',v:22},{ d:'Sáb',v:14},{ d:'Dom',v:9}]
   const horasEng = [{ h:'6h',v:3},{ h:'8h',v:8},{ h:'10h',v:14},{ h:'12h',v:11},{ h:'14h',v:9},{ h:'16h',v:12},{ h:'18h',v:19},{ h:'20h',v:22},{ h:'22h',v:15}]
@@ -262,14 +308,12 @@ export default function App() {
     { id: 'comercial', label: mobile ? '💰' : '💰 Comercial'  },
     { id: 'copy',      label: mobile ? '💬' : '💬 Copy'       },
     { id: 'churn',     label: mobile ? '⚠️' : '⚠️ Risco'     },
+    { id: 'custo',     label: mobile ? '💵' : '💵 Custo'      },
   ]
 
-  // Alunos fantasmas por produto
   const fantResgate = fantasmas.filter(a => a.produto === 'resgate')
   const fantCCC     = fantasmas.filter(a => a.produto === 'ccc')
-
-  // Potencial receita
-  const receitaPot = fantResgate.length * 897 + fantCCC.length * 497
+  const receitaPot  = fantResgate.length * 897 + fantCCC.length * 497
 
   return (
     <div style={{ background: T.bg, minHeight: '100vh' }}>
@@ -286,7 +330,7 @@ export default function App() {
 
       <div style={{ maxWidth: 1000, margin: '0 auto', padding: mobile ? '18px 14px' : '30px 28px' }}>
 
-        {/* ── HEADER ── */}
+        {/* HEADER */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
@@ -316,21 +360,17 @@ export default function App() {
           </div>
         </div>
 
-        {/* ── TABS ── */}
         <Tabs tabs={mainTabs} active={mainTab} onChange={setMainTab} mobile={mobile} />
 
-        {/* ════════════════════════════════════
-            GERAL
-        ════════════════════════════════════ */}
+        {/* ════ GERAL ════ */}
         {mainTab === 'geral' && (
           <>
             <div style={g(4)}>
               <KPI label="Alunos ativos"       value={data?.total_ativos    || 0} color={T.amber} icon="👥" />
-              <KPI label="Conversas na semana" value={data?.total_conversas || 0} color={T.blue}  icon="💬" sub={data?.tempo_medio_engajamento ? `1º engaj. em ${data.tempo_medio_engajamento.toFixed(1)}h` : undefined} />
+              <KPI label="Conversas na semana" value={data?.total_conversas || 0} color={T.blue}  icon="💬" />
               <KPI label="Inativos +3 dias"    value={data?.total_inativos  || 0} color={T.red}   icon="😶" />
-              <KPI label="Fantasmas"           value={fantasmas.length}           color={T.t3}    icon="👻" sub="nunca conversaram" />
+              <KPI label="Custo da semana"     value={`R$ ${custoSemana.brl}`}    color={T.t3}    icon="💵" sub={`US$ ${custoSemana.usd}`} />
             </div>
-
             <div style={g(2)}>
               <Card>
                 <CTitle>Distribuição por produto</CTitle>
@@ -364,7 +404,6 @@ export default function App() {
                 ) : <Empty />}
               </Card>
             </div>
-
             <div style={g(2)}>
               <Card>
                 <CTitle>Melhores dias da semana</CTitle>
@@ -392,10 +431,9 @@ export default function App() {
                 </ResponsiveContainer>
               </Card>
             </div>
-
             {historico.length > 1 && (
               <Card>
-                <CTitle>Evolução da base — alunos ativos vs em crise</CTitle>
+                <CTitle>Evolução da base — ativos vs em crise</CTitle>
                 <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap' }}>
                   {[[T.amber,'ativos'],[T.red,'em crise'],[T.green,'progresso']].map(([c,l]) => (
                     <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.t3 }}>
@@ -419,9 +457,7 @@ export default function App() {
           </>
         )}
 
-        {/* ════════════════════════════════════
-            RESGATE
-        ════════════════════════════════════ */}
+        {/* ════ RESGATE ════ */}
         {mainTab === 'resgate' && (
           <>
             <STitle icon="🔵" title="Resgate — Método Completo" sub="7 módulos · programa integral de restauração conjugal" />
@@ -435,9 +471,9 @@ export default function App() {
                 <CTitle>Estado emocional — Resgate</CTitle>
                 <ResponsiveContainer width="100%" height={150}>
                   <BarChart barSize={34} margin={{ top: 4, right: 4, bottom: 0, left: -24 }} data={[
-                    { e: 'Crise', v: data?.resgate_crise||0, c: T.red },
-                    { e: 'Estável', v: data?.resgate_estaveis||0, c: T.amber },
-                    { e: 'Progresso', v: data?.resgate_progresso||0, c: T.green },
+                    { e: 'Crise',     v: data?.resgate_crise    ||0 },
+                    { e: 'Estável',   v: data?.resgate_estaveis ||0 },
+                    { e: 'Progresso', v: data?.resgate_progresso||0 },
                   ]}>
                     <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
                     <XAxis dataKey="e" tick={{ fontSize: 11, fill: T.t3 }} />
@@ -450,50 +486,23 @@ export default function App() {
                 </ResponsiveContainer>
               </Card>
               <Card>
-                <CTitle>Tempo no programa — distribuição</CTitle>
-                <div style={{ fontSize: 11, color: T.t3, marginBottom: 10 }}>Alunos Resgate por tempo de cadastro</div>
-                {[['≤ 7 dias', T.green, 35], ['8–30 dias', T.amber, 42], ['+30 dias', T.blue, 23]].map(([l, c, p]) => (
-                  <BRow key={l} label={l} pct={p} color={c} right={`${Math.round((totalResgate * p) / 100)} alunos`} />
-                ))}
-                <div style={{ fontSize: 10, color: T.t3, marginTop: 8 }}>⚠️ Dados reais após ajuste no workflow</div>
-              </Card>
-            </div>
-            <div style={g(2)}>
-              <Card>
                 <CTitle>Top dores — Resgate</CTitle>
                 {topDores.length > 0
                   ? [...topDores].sort((a,b) => b.percentual-a.percentual).map((d,i) => <BRow key={i} rank={i+1} label={d.dor} pct={d.percentual} color={T.blue} />)
                   : <Empty />}
               </Card>
-              <Card>
-                <CTitle>Módulos mencionados nas conversas</CTitle>
-                <div style={{ fontSize: 11, color: T.t3, marginBottom: 10 }}>Identificados pelo clone a partir do contexto</div>
-                {topModulos.length > 0
-                  ? [...topModulos].sort((a,b) => b.percentual-a.percentual).map((m,i) => <BRow key={i} rank={i+1} label={m.modulo} pct={m.percentual} color={T.blue} />)
-                  : <Empty />}
-              </Card>
             </div>
             <Card>
-              <CTitle>Evolução semanal — Resgate</CTitle>
-              {historico.length > 1 ? (
-                <ResponsiveContainer width="100%" height={160}>
-                  <LineChart data={historico} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
-                    <XAxis dataKey="s" tick={{ fontSize: 10, fill: T.t3 }} />
-                    <YAxis tick={{ fontSize: 10, fill: T.t3 }} />
-                    <Tooltip contentStyle={tt} />
-                    <Line type="monotone" dataKey="crise" stroke={T.red}   strokeWidth={2} dot={{ r: 3 }} name="crise" strokeDasharray="4 3" />
-                    <Line type="monotone" dataKey="prog"  stroke={T.green} strokeWidth={2} dot={{ r: 3 }} name="progresso" />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : <Empty />}
+              <CTitle>Módulos mencionados nas conversas</CTitle>
+              <div style={{ fontSize: 11, color: T.t3, marginBottom: 10 }}>Identificados pelo clone a partir do contexto</div>
+              {topModulos.length > 0
+                ? [...topModulos].sort((a,b) => b.percentual-a.percentual).map((m,i) => <BRow key={i} rank={i+1} label={m.modulo} pct={m.percentual} color={T.blue} />)
+                : <Empty />}
             </Card>
           </>
         )}
 
-        {/* ════════════════════════════════════
-            CCC
-        ════════════════════════════════════ */}
+        {/* ════ CCC ════ */}
         {mainTab === 'ccc' && (
           <>
             <STitle icon="🟣" title="Como Convencer seu Cônjuge" sub="4 módulos · produto de entrada · porta para o Resgate" />
@@ -547,7 +556,7 @@ export default function App() {
                   : <Empty />}
               </Card>
               <Card>
-                <CTitle>CCC vs Resgate — comparativo de engajamento</CTitle>
+                <CTitle>CCC vs Resgate — comparativo</CTitle>
                 <ResponsiveContainer width="100%" height={150}>
                   <BarChart barSize={28} margin={{ top: 4, right: 4, bottom: 0, left: -24 }} data={[
                     { p: 'CCC',     crise: data?.ccc_crise||0,     prog: data?.ccc_progresso||0     },
@@ -566,29 +575,25 @@ export default function App() {
           </>
         )}
 
-        {/* ════════════════════════════════════
-            COMERCIAL
-        ════════════════════════════════════ */}
+        {/* ════ COMERCIAL ════ */}
         {mainTab === 'comercial' && (
           <>
             <STitle icon="💰" title="Inteligência comercial" sub="Pipeline de upgrade, reengajamento e receita potencial" />
             <div style={g(3)}>
-              <KPI label="Fantasmas total"    value={fantasmas.length}                             color={T.t3}    icon="👻" sub={`${fantResgate.length} Resgate · ${fantCCC.length} CCC`} />
-              <KPI label="Pipeline upgrade"   value={Math.round(totalCCC * 0.3)}                   color={T.amber} icon="⬆️" sub="CCC → Resgate estimado" />
-              <KPI label="Receita potencial"  value={`R$ ${receitaPot.toLocaleString('pt-BR')}`}  color={T.green} icon="💵" sub="fantasmas reengajados" />
+              <KPI label="Fantasmas total"   value={fantasmas.length}                            color={T.t3}    icon="👻" sub={`${fantResgate.length} Resgate · ${fantCCC.length} CCC`} />
+              <KPI label="Pipeline upgrade"  value={Math.round(totalCCC * 0.3)}                  color={T.amber} icon="⬆️" sub="CCC → Resgate estimado" />
+              <KPI label="Receita potencial" value={`R$ ${receitaPot.toLocaleString('pt-BR')}`} color={T.green} icon="💵" sub="fantasmas reengajados" />
             </div>
-
             <Card style={{ marginBottom: 14 }}>
               <CTitle right={<Badge color={T.red}>{fantasmas.length} total</Badge>}>
                 👻 Fantasmas — compraram e nunca conversaram
               </CTitle>
               <FantasmasTable fantasmas={fantasmas} copied={copied} onCopy={copyNum} mobile={mobile} />
             </Card>
-
             <div style={g(2)}>
               <Card>
                 <CTitle>Engajamento por tempo de compra</CTitle>
-                <div style={{ fontSize: 11, color: T.t3, marginBottom: 12 }}>Alunos recentes tendem a engajar mais — dados reais após ajuste no workflow</div>
+                <div style={{ fontSize: 11, color: T.t3, marginBottom: 12 }}>Alunos recentes tendem a engajar mais</div>
                 <ResponsiveContainer width="100%" height={140}>
                   <BarChart barSize={22} margin={{ top: 4, right: 4, bottom: 0, left: -24 }} data={[
                     { g: '≤7d',  conv: 12, ativos: 8  },
@@ -624,9 +629,7 @@ export default function App() {
           </>
         )}
 
-        {/* ════════════════════════════════════
-            COPY
-        ════════════════════════════════════ */}
+        {/* ════ COPY ════ */}
         {mainTab === 'copy' && (
           <>
             <STitle icon="💬" title="Painel de copy" sub="Frases reais dos alunos — ouro para comunicação, conteúdo e vendas" />
@@ -637,9 +640,7 @@ export default function App() {
               </CTitle>
               {frasesCopy[copyTab].length > 0 ? frasesCopy[copyTab].map((f, i) => (
                 <div key={i} style={{ padding: '14px 0', borderBottom: i < frasesCopy[copyTab].length-1 ? `1px solid ${T.border}` : 'none', display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-                  <div style={{ minWidth: 28, height: 28, borderRadius: 8, background: i===0 ? T.amberD : T.elevated, color: i===0 ? T.amberL : T.t3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>
-                    #{i+1}
-                  </div>
+                  <div style={{ minWidth: 28, height: 28, borderRadius: 8, background: i===0 ? T.amberD : T.elevated, color: i===0 ? T.amberL : T.t3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>#{i+1}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, color: T.t1, lineHeight: 1.6, fontStyle: 'italic', marginBottom: 8 }}>"{f.frase}"</div>
                     <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -654,19 +655,15 @@ export default function App() {
           </>
         )}
 
-        {/* ════════════════════════════════════
-            RISCO / CHURN
-        ════════════════════════════════════ */}
+        {/* ════ RISCO ════ */}
         {mainTab === 'churn' && (
           <>
             <STitle icon="⚠️" title="Risco de churn" sub="Alunos que precisam de atenção imediata" />
             <div style={g(3)}>
-              <KPI label="Inativos +3 dias" value={data?.total_inativos||0} color={T.red}   icon="🔕" />
-              <KPI label="Em crise ativa"   value={data?.total_crise   ||0} color={T.red}   icon="🆘" sub="mencionaram crise emocional" />
-              <KPI label="Fantasmas"        value={fantasmas.length}         color={T.t3}    icon="👻" sub="risco de chargeback" />
+              <KPI label="Inativos +3 dias"  value={data?.total_inativos||0} color={T.red}   icon="🔕" />
+              <KPI label="Em crise ativa"    value={data?.total_crise   ||0} color={T.red}   icon="🆘" sub="mencionaram crise emocional" />
+              <KPI label="Sem progresso +7d" value={alunosSemProgresso.length} color={T.amber} icon="📉" sub="ativos há +7 dias" />
             </div>
-
-            {/* Alerta crise */}
             {(data?.total_crise||0) > 0 && (
               <div style={{ background: `${T.redD}55`, border: `1px solid ${T.red}44`, borderRadius: 12, padding: '14px 18px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
                 <span style={{ fontSize: 20 }}>🆘</span>
@@ -676,14 +673,38 @@ export default function App() {
                 </div>
               </div>
             )}
-
             <Card style={{ marginBottom: 14 }}>
-              <CTitle right={<Badge color={T.red}>{fantasmas.length}</Badge>}>
-                👻 Fantasmas — compraram e nunca responderam ao clone
+              <CTitle right={<Badge color={T.amber}>{alunosSemProgresso.length}</Badge>}>
+                📉 Alunos sem progresso — ativos há +7 dias
               </CTitle>
-              <FantasmasTable fantasmas={fantasmas} copied={copied} onCopy={copyNum} mobile={mobile} />
+              {alunosSemProgresso.length > 0 ? (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr>{['Nome','Produto','Telefone','Dias ativo','Ação'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '7px 10px', color: T.t3, fontWeight: 500, fontSize: 10, borderBottom: `1px solid ${T.border}`, whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
+                      ))}</tr>
+                    </thead>
+                    <tbody>
+                      {alunosSemProgresso.map((a, i) => {
+                        const dias = a.criado_em ? Math.floor((Date.now() - new Date(a.criado_em)) / 86400000) : null
+                        return (
+                          <tr key={i} style={{ borderBottom: `1px solid ${T.border}` }}>
+                            <td style={{ padding: '10px 10px', color: T.t1, fontWeight: 500 }}>{a.nome || '—'}</td>
+                            <td style={{ padding: '10px 10px' }}><ProdBadge p={a.produto} /></td>
+                            <td style={{ padding: '10px 10px', color: T.t3, fontFamily: 'monospace', fontSize: 11 }}>{a.telefone}</td>
+                            <td style={{ padding: '10px 10px' }}>
+                              <span style={{ color: dias > 30 ? T.red : T.amber, fontWeight: 600 }}>{dias !== null ? `${dias}d` : '—'}</span>
+                            </td>
+                            <td style={{ padding: '10px 10px' }}><CopyBtn value={a.telefone} copied={copied} onCopy={copyNum} /></td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <Empty msg="🎉 Nenhum aluno parado" />}
             </Card>
-
             <Card>
               <CTitle>Evolução do risco — últimas semanas</CTitle>
               {historico.length > 1 ? (
@@ -698,6 +719,85 @@ export default function App() {
                   </AreaChart>
                 </ResponsiveContainer>
               ) : <Empty />}
+            </Card>
+          </>
+        )}
+
+        {/* ════ CUSTO ════ */}
+        {mainTab === 'custo' && (
+          <>
+            <STitle icon="💵" title="Custo do clone" sub="Baseado em claude-sonnet-4-6 · $3/MTok input + $15/MTok output" />
+            <div style={g(3)}>
+              <KPI label="Custo esta semana"  value={`R$ ${custoSemana.brl}`}  color={T.amber} icon="📅" sub={`US$ ${custoSemana.usd} · ${convSemana} conv.`} />
+              <KPI label="Custo estimado mês" value={`R$ ${(parseFloat(custoSemana.brl) * 4.3).toFixed(2)}`} color={T.blue} icon="🗓️" sub="projeção × 4.3 semanas" />
+              <KPI label="Custo por conversa" value={`R$ ${(CUSTO_POR_CONVERSA * USD_TO_BRL).toFixed(4)}`} color={T.t3} icon="💬" sub="~800 input + 300 output tokens" />
+            </div>
+
+            {/* Histórico de custo semanal */}
+            {historico.length > 1 && (
+              <Card style={{ marginBottom: 14 }}>
+                <CTitle>Custo semanal — histórico (R$)</CTitle>
+                <ResponsiveContainer width="100%" height={160}>
+                  <AreaChart data={historico} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}>
+                    <defs><linearGradient id="gc" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={T.amber} stopOpacity={0.25}/><stop offset="95%" stopColor={T.amber} stopOpacity={0}/></linearGradient></defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                    <XAxis dataKey="s" tick={{ fontSize: 10, fill: T.t3 }} />
+                    <YAxis tick={{ fontSize: 10, fill: T.t3 }} tickFormatter={v => `R$${v.toFixed(1)}`} />
+                    <Tooltip contentStyle={tt} formatter={v => [`R$ ${v.toFixed(2)}`, 'custo']} />
+                    <Area type="monotone" dataKey="custo" stroke={T.amber} fill="url(#gc)" strokeWidth={2} dot={{ r: 3, fill: T.amber }} name="custo R$" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </Card>
+            )}
+
+            {/* Projeções de escala */}
+            <Card style={{ marginBottom: 14 }}>
+              <CTitle>Projeção de custo por escala</CTitle>
+              <div style={{ fontSize: 11, color: T.t3, marginBottom: 14 }}>
+                Baseado na proporção atual: {convSemana} conversas / {data?.total_ativos || 0} alunos = {data?.total_ativos ? (convSemana / data.total_ativos).toFixed(1) : '—'} conv/aluno/semana
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>{['Escala','Leads','Conv/semana','Custo/semana','Custo/mês','Custo/ano'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '8px 12px', color: T.t3, fontWeight: 500, fontSize: 10, borderBottom: `1px solid ${T.border}`, whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
+                    ))}</tr>
+                  </thead>
+                  <tbody>
+                    {projecoes.map((p, i) => (
+                      <tr key={i} style={{ borderBottom: `1px solid ${T.border}`, background: i === 0 ? `${T.amber}11` : 'transparent' }}>
+                        <td style={{ padding: '10px 12px' }}>
+                          <span style={{ background: i === 0 ? T.amberD : T.elevated, color: i === 0 ? T.amberL : T.t2, padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>{p.label}</span>
+                        </td>
+                        <td style={{ padding: '10px 12px', color: T.t1, fontWeight: 500 }}>{p.leads.toLocaleString('pt-BR')}</td>
+                        <td style={{ padding: '10px 12px', color: T.t2 }}>{p.conv.toLocaleString('pt-BR')}</td>
+                        <td style={{ padding: '10px 12px', color: T.amber, fontWeight: 600 }}>R$ {p.custoBRL.toFixed(2)}</td>
+                        <td style={{ padding: '10px 12px', color: T.t2 }}>R$ {(p.custoBRL * 4.3).toFixed(2)}</td>
+                        <td style={{ padding: '10px 12px', color: T.t2 }}>R$ {(p.custoBRL * 52).toFixed(0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Gráfico de projeção */}
+            <Card>
+              <CTitle>Custo mensal projetado por escala (R$)</CTitle>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={projecoes} barSize={36} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.t3 }} />
+                  <YAxis tick={{ fontSize: 10, fill: T.t3 }} tickFormatter={v => `R$${v.toFixed(0)}`} />
+                  <Tooltip contentStyle={tt} formatter={v => [`R$ ${(v * 4.3).toFixed(2)}`, 'custo/mês']} />
+                  <Bar dataKey="custoBRL" name="custo/semana" radius={[6,6,0,0]}>
+                    {projecoes.map((_, i) => <Cell key={i} fill={i === 0 ? T.amber : i < 3 ? T.blue : T.purple} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <div style={{ fontSize: 10, color: T.t3, marginTop: 10 }}>
+                * Custo por conversa: R$ {(CUSTO_POR_CONVERSA * USD_TO_BRL).toFixed(4)} · Câmbio USD/BRL: {USD_TO_BRL} · Modelo: claude-sonnet-4-6
+              </div>
             </Card>
           </>
         )}
