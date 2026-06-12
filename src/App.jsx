@@ -118,7 +118,7 @@ export default function App() {
         const [rAnal, rAlunos, rConvAll] = await Promise.all([
           fetch(`${SUPABASE_URL}/analises?order=criado_em.desc&limit=60`, {headers:H}).then(r=>r.json()),
           fetch(`${SUPABASE_URL}/alunos?ativo=eq.true&select=id,nome,telefone,produto,criado_em`, {headers:H}).then(r=>r.json()),
-          fetch(`${SUPABASE_URL}/conversas?select=aluno_id,role,criado_em&order=criado_em.desc&limit=5000`, {headers:H}).then(r=>r.json()),
+          fetch(`${SUPABASE_URL}/conversas?select=aluno_id,telefone,role,mensagem,criado_em&order=criado_em.desc&limit=10000`, {headers:H}).then(r=>r.json()),
         ])
 
         const analises = (rAnal||[]).filter(r=>(r.total_ativos||0)>0)
@@ -132,37 +132,64 @@ export default function App() {
         const comConv = new Set(convArr.map(c=>c.aluno_id))
         setFantasmas(alunosArr.filter(a=>!comConv.has(a.id)))
 
-        // Sem progresso (ativos há +7 dias e com conversas)
+        // Sem progresso: alunos ativos há +7 dias com poucas conversas (abaixo da média)
+        // Calculamos a média de conversas por aluno e filtramos os que estão abaixo
+        const totalConvUser = convArr.filter(c=>c.role==='user').length
+        const totalAlunosComConv = new Set(convArr.filter(c=>c.role==='user').map(c=>c.aluno_id)).size
+        const mediaConvAluno = totalAlunosComConv > 0 ? totalConvUser / totalAlunosComConv : 5
+        const porAlunoTemp = {}
+        convArr.filter(c=>c.role==='user').forEach(c=>{
+          if(c.aluno_id) porAlunoTemp[c.aluno_id] = (porAlunoTemp[c.aluno_id]||0)+1
+        })
         setAlunosSemProgresso(alunosArr.filter(a=>{
           const dias = a.criado_em ? Math.floor((Date.now()-new Date(a.criado_em))/86400000) : 0
-          return dias>7 && comConv.has(a.id)
+          const msgs = porAlunoTemp[a.id] || 0
+          // Sem progresso = ativo há +7 dias E tem conversas mas abaixo de 30% da média
+          return dias > 7 && comConv.has(a.id) && msgs < (mediaConvAluno * 0.3)
         }))
 
-        // Conversas diárias (últimos 14 dias)
+        // Conversas diárias (últimos 14 dias) — timezone Brasil UTC-3
+        const toLocalDate = (isoStr) => {
+          if (!isoStr) return null
+          const d = new Date(isoStr)
+          // Ajuste UTC-3 (Brasil)
+          d.setHours(d.getHours() - 3)
+          return d.toISOString().split('T')[0]
+        }
         const hoje = new Date()
+        hoje.setHours(hoje.getHours() - 3)
+        const hojeStr = hoje.toISOString().split('T')[0]
         const dias14 = Array.from({length:14},(_,i)=>{
-          const d = new Date(hoje); d.setDate(d.getDate()-13+i)
+          const d = new Date(hojeStr)
+          d.setDate(d.getDate() - 13 + i)
           return d.toISOString().split('T')[0]
         })
         const contDia = {}
         dias14.forEach(d=>{ contDia[d]=0 })
         convArr.filter(c=>c.role==='user').forEach(c=>{
-          const dia = c.criado_em?.split('T')[0]
+          const dia = toLocalDate(c.criado_em)
           if (dia && contDia[dia]!==undefined) contDia[dia]++
         })
+        console.log('convDiarias debug:', contDia, 'total user msgs:', convArr.filter(c=>c.role==='user').length)
         setConvDiarias(dias14.map(d=>({
-          dia: d.slice(5), // MM-DD
+          dia: d.slice(5),
           total: contDia[d]||0,
           data: d,
         })))
 
-        // Conversas por aluno (ranking)
+        // Conversas por aluno (ranking) — contar todas as mensagens user
         const porAluno = {}
         convArr.filter(c=>c.role==='user').forEach(c=>{
-          porAluno[c.aluno_id] = (porAluno[c.aluno_id]||0)+1
+          if (c.aluno_id) porAluno[c.aluno_id] = (porAluno[c.aluno_id]||0)+1
         })
+        // fallback: contar por telefone se aluno_id nulo
+        const porTelefone = {}
+        convArr.filter(c=>c.role==='user').forEach(c=>{
+          if (c.telefone) porTelefone[c.telefone] = (porTelefone[c.telefone]||0)+1
+        })
+        console.log('porAluno keys:', Object.keys(porAluno).length, 'porTelefone keys:', Object.keys(porTelefone).length)
         setConvPorAluno(porAluno)
-        setAlunosAtivos(alunosArr.filter(a=>comConv.has(a.id)))
+        setAlunosAtivos(alunosArr.filter(a=>comConv.has(a.id) || Object.keys(porAluno).includes(a.id)))
 
       } catch(e){console.error(e)}
       finally{setLoading(false)}
@@ -335,7 +362,15 @@ export default function App() {
               <KPI label="Alunos ativos"       value={data?.total_ativos||0}   color={T.amber} icon="👥"/>
               <KPI label="Conversas na semana" value={data?.total_conversas||0} color={T.blue}  icon="💬"/>
               <KPI label="Inativos +3 dias"    value={data?.total_inativos||0}  color={T.red}   icon="😶"/>
-              <KPI label={periodoTipo==='mes'?'Custo do mês':'Custo da semana'} value={`US$ ${custoUSD.toFixed(2)}`} color={T.t3} icon="💵" sub={`R$ ${custoBRL.toFixed(2)} · câmbio ${usdBrl.toFixed(2)}`}/>
+              <KPI
+                label={periodoTipo==='mes' ? 'Custo real do mês' : 'Custo da semana'}
+                value={`US$ ${custoUSD.toFixed(2)}`}
+                color={T.t3} icon="💵"
+                sub={periodoTipo==='mes'
+                  ? `R$ ${custoBRL.toFixed(2)} · ${semanasSdoMes.length} sem. reais`
+                  : `R$ ${custoBRL.toFixed(2)} · câmbio ${usdBrl.toFixed(2)}`
+                }
+              />
             </div>
 
             <div style={g(2)}>
