@@ -197,15 +197,42 @@ export default function App() {
   const pctCCC = totalP>0 ? Math.round((totalCCC/totalP)*100) : 0
   const pctResgate = 100-pctCCC
 
-  // Custo
+  // ── CUSTO ────────────────────────────────────────────────────────────────
+  // Quando período = semana: custo da semana selecionada
+  // Quando período = mês: soma real de todas as semanas do mês na tabela analises
+  const mesSel = data?.mes || ''
+  const semanasSdoMes = allAnalises.filter(r => r.mes === mesSel)
+  const convDoMes = semanasSdoMes.reduce((s, r) => s + (r.total_conversas || 0), 0)
   const convSemana = data?.total_conversas || 0
-  const custoUSD   = convSemana * CUSTO_CONV_USD
-  const custoBRL   = custoUSD * usdBrl
-  const custoMesUSD = custoUSD * 4.3
-  const custoMesBRL = custoBRL * 4.3
 
-  // Projeções de escala
-  const convPorAluno_ = data?.total_ativos ? convSemana / data.total_ativos : 0
+  // Custo do período selecionado
+  const convPeriodo = periodoTipo === 'mes' ? convDoMes : convSemana
+  const custoUSD    = convPeriodo * CUSTO_CONV_USD
+  const custoBRL    = custoUSD * usdBrl
+
+  // Custo estimado do mês — média ponderada das semanas reais disponíveis
+  // Se já temos semanas do mês atual, extrapolamos para 4 semanas com base na média real
+  const semanasComDados = allAnalises.filter(r => (r.total_conversas || 0) > 0)
+  const mediaConvSemana = semanasComDados.length > 0
+    ? semanasComDados.reduce((s, r) => s + (r.total_conversas || 0), 0) / semanasComDados.length
+    : convSemana
+  const semanasNoMes = 4
+  const custoMesEstUSD = mediaConvSemana * semanasNoMes * CUSTO_CONV_USD
+  const custoMesEstBRL = custoMesEstUSD * usdBrl
+  const baseEstimativa = `média de ${semanasComDados.length} semana(s) real(is): ${Math.round(mediaConvSemana)} conv/sem × ${semanasNoMes} sem`
+
+  // Custo real acumulado do mês selecionado (soma das semanas já registradas)
+  const custoMesRealUSD = convDoMes * CUSTO_CONV_USD
+  const custoMesRealBRL = custoMesRealUSD * usdBrl
+
+  // Projeções de escala — baseadas na média real de conversas por aluno
+  // Base: média de conversas/aluno/semana das últimas semanas com dados
+  const convPorAlunoMedia = semanasComDados.length > 0
+    ? semanasComDados.reduce((s, r) => s + ((r.total_conversas || 0) / Math.max(r.total_ativos || 1, 1)), 0) / semanasComDados.length
+    : (data?.total_ativos ? convSemana / data.total_ativos : 0)
+  const convPorAluno_ = convPorAlunoMedia
+  const baseProjecao = `${convPorAlunoMedia.toFixed(1)} conv/aluno/sem · média de ${semanasComDados.length} semana(s)`
+
   const projecoes = [
     {label:'Atual', leads: data?.total_ativos||0},
     {label:'2.5x',  leads: Math.round((data?.total_ativos||0)*2.5)},
@@ -213,9 +240,19 @@ export default function App() {
     {label:'10x',   leads: Math.round((data?.total_ativos||0)*10)},
     {label:'20x',   leads: Math.round((data?.total_ativos||0)*20)},
   ].map(p=>{
-    const c = Math.round(convPorAluno_ * p.leads)
-    const usd = c * CUSTO_CONV_USD
-    return {...p, conv:c, usd:usd.toFixed(2), brl:(usd*usdBrl).toFixed(2), mesBRL:((usd*usdBrl)*4.3).toFixed(2)}
+    const cSem = Math.round(convPorAlunoMedia * p.leads)
+    const cMes = cSem * semanasNoMes
+    const usdSem = cSem * CUSTO_CONV_USD
+    const usdMes = cMes * CUSTO_CONV_USD
+    return {
+      ...p,
+      conv: cSem,
+      convMes: cMes,
+      usdSem: usdSem.toFixed(2),
+      brlSem: (usdSem * usdBrl).toFixed(2),
+      usdMes: usdMes.toFixed(2),
+      brlMes: (usdMes * usdBrl).toFixed(2),
+    }
   })
 
   // Histórico semanas com custo
@@ -295,7 +332,7 @@ export default function App() {
               <KPI label="Alunos ativos"       value={data?.total_ativos||0}   color={T.amber} icon="👥"/>
               <KPI label="Conversas na semana" value={data?.total_conversas||0} color={T.blue}  icon="💬"/>
               <KPI label="Inativos +3 dias"    value={data?.total_inativos||0}  color={T.red}   icon="😶"/>
-              <KPI label="Custo da semana"     value={`US$ ${custoUSD.toFixed(2)}`} color={T.t3} icon="💵" sub={`R$ ${custoBRL.toFixed(2)} · câmbio ${usdBrl.toFixed(2)}`}/>
+              <KPI label={periodoTipo==='mes'?'Custo do mês':'Custo da semana'} value={`US$ ${custoUSD.toFixed(2)}`} color={T.t3} icon="💵" sub={`R$ ${custoBRL.toFixed(2)} · câmbio ${usdBrl.toFixed(2)}`}/>
             </div>
 
             <div style={g(2)}>
@@ -446,10 +483,16 @@ export default function App() {
               </Card>
             </div>
             <Card>
-              <CTitle>Módulos mencionados</CTitle>
-              <div style={{fontSize:11,color:T.t3,marginBottom:10}}>Identificados pelo clone a partir do contexto</div>
+              <CTitle>Módulos mencionados nas conversas</CTitle>
+              <div style={{background:T.elevated,borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:11,color:T.t2}}>
+                💡 <strong style={{color:T.t1}}>Como interpretar:</strong> o clone identifica qual módulo é mais relevante para a dúvida do aluno e o menciona na resposta. Alta frequência de um módulo = muitos alunos com dúvidas daquele tema específico. Isso indica onde o conteúdo precisa de mais suporte ou aprofundamento.
+              </div>
               {topModulos.length>0
-                ? [...topModulos].sort((a,b)=>b.percentual-a.percentual).map((m,i)=><BRow key={i} rank={i+1} label={m.modulo} pct={m.percentual} color={T.blue}/>)
+                ? [...topModulos].sort((a,b)=>b.percentual-a.percentual).map((m,i)=>(
+                    <div key={i} style={{marginBottom:12}}>
+                      <BRow rank={i+1} label={m.modulo} pct={m.percentual} color={T.blue}/>
+                    </div>
+                  ))
                 : <Empty/>}
             </Card>
           </>
@@ -711,11 +754,26 @@ export default function App() {
         {/* ════ CUSTO ════ */}
         {mainTab==='custo' && (
           <>
-            <STitle icon="💵" title="Custo do clone" sub={`claude-sonnet-4-6 · $3/MTok input + $15/MTok output · câmbio US$1 = R$${usdBrl.toFixed(2)}`}/>
+            <STitle icon="💵" title="Custo do clone" sub={`claude-sonnet-4-6 · $3/MTok input + $15/MTok output · câmbio US$1 = R$${usdBrl.toFixed(2)} (tempo real)`}/>
+            {periodoTipo==='mes' && custoMesRealUSD>0 && (
+              <div style={{background:`${T.green}11`,border:`1px solid ${T.green}33`,borderRadius:10,padding:'12px 16px',marginBottom:14,fontSize:12,color:T.t2}}>
+                ✅ <strong style={{color:T.green}}>Custo real acumulado — {mesSel}:</strong> US$ {custoMesRealUSD.toFixed(2)} · R$ {custoMesRealBRL.toFixed(2)} · {semanasSdoMes.length} semana(s) · {convDoMes} conversas
+              </div>
+            )}
             <div style={g(3)}>
-              <KPI label="Custo esta semana"  value={`US$ ${custoUSD.toFixed(2)}`}  color={T.amber} icon="📅" sub={`R$ ${custoBRL.toFixed(2)} · ${convSemana} conv.`}/>
-              <KPI label="Custo estimado mês" value={`US$ ${custoMesUSD.toFixed(2)}`} color={T.blue} icon="🗓️" sub={`R$ ${custoMesBRL.toFixed(2)} · projeção ×4.3`}/>
-              <KPI label="Custo por conversa" value={`US$ ${CUSTO_CONV_USD.toFixed(4)}`} color={T.t3} icon="💬" sub={`R$ ${(CUSTO_CONV_USD*usdBrl).toFixed(4)} · 800+300 tokens`}/>
+              <KPI
+                label={periodoTipo==='mes' ? 'Custo real do mês' : 'Custo da semana'}
+                value={`US$ ${custoUSD.toFixed(2)}`}
+                color={T.amber} icon="📅"
+                sub={`R$ ${custoBRL.toFixed(2)} · ${convPeriodo} conv.` + (periodoTipo==='mes' ? ` · ${semanasSdoMes.length} sem.` : '')}
+              />
+              <KPI
+                label="Estimativa mensal"
+                value={`US$ ${custoMesEstUSD.toFixed(2)}`}
+                color={T.blue} icon="🗓️"
+                sub={`R$ ${custoMesEstBRL.toFixed(2)} · média de ${semanasComDados.length} sem. reais`}
+              />
+              <KPI label="Custo por conversa" value={`US$ ${CUSTO_CONV_USD.toFixed(4)}`} color={T.t3} icon="💬" sub={`R$ ${(CUSTO_CONV_USD*usdBrl).toFixed(4)} · 800tok in + 300tok out`}/>
             </div>
 
             {historico.length>1 && (
@@ -764,12 +822,13 @@ export default function App() {
             {/* Projeções */}
             <Card style={{marginBottom:14}}>
               <CTitle>Projeção por escala</CTitle>
-              <div style={{fontSize:11,color:T.t3,marginBottom:14}}>
-                Proporção atual: {convSemana} conv / {data?.total_ativos||0} alunos = {convPorAluno_.toFixed(1)} conv/aluno/semana
+              <div style={{background:T.elevated,borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:11,color:T.t2}}>
+                📐 <strong style={{color:T.t1}}>Base do cálculo:</strong> {baseProjecao}<br/>
+                <span style={{color:T.t3}}>Fórmula: leads × {convPorAluno_.toFixed(1)} conv/aluno/sem × custo/conv (US$ {CUSTO_CONV_USD.toFixed(4)}) × câmbio R${usdBrl.toFixed(2)}</span>
               </div>
               <div style={{overflowX:'auto'}}>
                 <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-                  <thead><tr>{['Escala','Leads','Conv/sem','US$/sem','R$/sem','US$/mês','R$/mês'].map(h=>(
+                  <thead><tr>{['Escala','Leads','Conv/sem','Conv/mês','US$/sem','R$/sem','US$/mês','R$/mês'].map(h=>(
                     <th key={h} style={{textAlign:'left',padding:'8px 12px',color:T.t3,fontWeight:500,fontSize:10,borderBottom:`1px solid ${T.border}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'0.05em'}}>{h}</th>
                   ))}</tr></thead>
                   <tbody>
@@ -778,10 +837,11 @@ export default function App() {
                         <td style={{padding:'10px 12px'}}><span style={{background:i===0?T.amberD:T.elevated,color:i===0?T.amberL:T.t2,padding:'2px 8px',borderRadius:6,fontSize:11,fontWeight:600}}>{p.label}</span></td>
                         <td style={{padding:'10px 12px',color:T.t1,fontWeight:500}}>{p.leads.toLocaleString('pt-BR')}</td>
                         <td style={{padding:'10px 12px',color:T.t2}}>{p.conv.toLocaleString('pt-BR')}</td>
-                        <td style={{padding:'10px 12px',color:T.amber,fontWeight:600}}>US$ {p.usd}</td>
-                        <td style={{padding:'10px 12px',color:T.t2}}>R$ {p.brl}</td>
-                        <td style={{padding:'10px 12px',color:T.t2}}>US$ {(parseFloat(p.usd)*4.3).toFixed(2)}</td>
-                        <td style={{padding:'10px 12px',color:T.green,fontWeight:600}}>R$ {p.mesBRL}</td>
+                        <td style={{padding:'10px 12px',color:T.t2}}>{p.convMes.toLocaleString('pt-BR')}</td>
+                        <td style={{padding:'10px 12px',color:T.amber,fontWeight:600}}>US$ {p.usdSem}</td>
+                        <td style={{padding:'10px 12px',color:T.t2}}>R$ {p.brlSem}</td>
+                        <td style={{padding:'10px 12px',color:T.blue,fontWeight:600}}>US$ {p.usdMes}</td>
+                        <td style={{padding:'10px 12px',color:T.green,fontWeight:600}}>R$ {p.brlMes}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -796,7 +856,7 @@ export default function App() {
                   <CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
                   <XAxis dataKey="label" tick={{fontSize:11,fill:T.t3}}/>
                   <YAxis tick={{fontSize:10,fill:T.t3}} tickFormatter={v=>`R$${v}`}/>
-                  <Tooltip contentStyle={tt} formatter={(v,n,p)=>[`R$ ${p.payload.mesBRL}/mês · US$ ${(parseFloat(p.payload.usd)*4.3).toFixed(2)}/mês`,'custo mensal']}/>
+                  <Tooltip contentStyle={tt} formatter={(v,n,p)=>[`R$ ${p.payload.brlMes}/mês · US$ ${p.payload.usdMes}/mês`,'custo mensal']}/>
                   <Bar dataKey="mesBRL" name="R$/mês" radius={[6,6,0,0]}>
                     {projecoes.map((_,i)=><Cell key={i} fill={i===0?T.amber:i<3?T.blue:T.purple}/>)}
                   </Bar>
