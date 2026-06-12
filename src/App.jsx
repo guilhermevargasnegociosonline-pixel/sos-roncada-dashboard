@@ -10,11 +10,14 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const H = { 'Authorization': `Bearer ${SUPABASE_KEY}`, 'apikey': SUPABASE_KEY }
 
 // Custo claude-sonnet-4-6
+// Calibrado com dados reais: US$ 4,40 / 111 conversas = US$ 0,03964/conv
+// 10.963 tokens input (system prompt ~3k + histórico + mensagem) + 450 output
 const CUSTO_INPUT  = 3 / 1_000_000   // $3 por MTok input
 const CUSTO_OUTPUT = 15 / 1_000_000  // $15 por MTok output
-const TOK_IN  = 800  // tokens input médio por conversa
-const TOK_OUT = 300  // tokens output médio por conversa
+const TOK_IN  = 10963 // calibrado: system prompt + histórico + mensagem média
+const TOK_OUT = 450   // tokens output médio por conversa
 const CUSTO_CONV_USD = (TOK_IN * CUSTO_INPUT) + (TOK_OUT * CUSTO_OUTPUT)
+// Verificação: 111 conv × US$ 0.039640 = US$ 4.40 ✓
 
 async function getUSDtoBRL() {
   try {
