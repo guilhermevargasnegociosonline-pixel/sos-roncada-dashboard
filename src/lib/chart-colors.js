@@ -1,12 +1,13 @@
 // Cores explícitas em hex para o Recharts (SVG não lê var(--...) de forma confiável em todas as props)
 export const C = {
-  amber: '#f59e0b',
-  amberSoft: '#fcd34d',
-  blue: '#3b82f6',
+  primary: '#6366f1',
+  primarySoft: '#a5b4fc',
+  blue: '#0ea5e9',
   purple: '#a78bfa',
   green: '#22c55e',
   red: '#ef4444',
-  border: '#232c3d',
-  muted: '#94a3b8',
-  mutedDark: '#475569',
+  amber: '#f59e0b',
+  border: '#1f2637',
+  muted: '#8896ab',
+  mutedDark: '#4b5768',
 }

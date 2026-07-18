@@ -116,10 +116,28 @@ export function DataTable({ headers, children }) {
 }
 
 export const tooltipStyle = {
-  background: '#1e2535',
-  border: '1px solid #2e3a50',
+  background: '#161c2c',
+  border: '1px solid #262f45',
   borderRadius: 8,
-  color: '#94a3b8',
+  color: '#8896ab',
   fontSize: 11,
   boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+}
+
+export function DiagnosticoBox({ texto }) {
+  if (!texto) return null
+  const partes = texto.split(/TECNICO:?/i)
+  const resumo = (partes[0] || '').replace(/RESUMO:?/i, '').replace(/^#+\s*/gm, '').trim()
+  const tecnico = (partes[1] || '').replace(/^#+\s*/gm, '').trim()
+  return (
+    <div className="mt-2.5 bg-indigo-500/8 border border-indigo-500/25 rounded-lg px-3.5 py-3">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-300 mb-1">Diagnóstico (IA)</div>
+      <div className="text-xs text-foreground leading-relaxed">{resumo}</div>
+      {tecnico && (
+        <div className="mt-2 pt-2 border-t border-indigo-500/15 text-[11px] text-muted-foreground leading-relaxed">
+          <span className="font-semibold text-muted-foreground/80">Técnico: </span>{tecnico}
+        </div>
+      )}
+    </div>
+  )
 }

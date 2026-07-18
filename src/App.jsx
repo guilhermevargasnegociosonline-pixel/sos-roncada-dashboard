@@ -1,29 +1,29 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, AreaChart, Area, Cell
 } from 'recharts'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Kpi, SectionCard, SectionTitle, ProgressRow, Pill, ProductBadge,
-  EmptyState, CopyPhoneButton, DataTable, tooltipStyle,
+  EmptyState, CopyPhoneButton, DataTable, DiagnosticoBox, tooltipStyle,
 } from '@/components/dashboard/dashboard-ui'
 import { C } from '@/lib/chart-colors'
+import { supabase, DIAGNOSTICAR_WEBHOOK } from '@/lib/supabase'
 
 const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJua2Vzc2h6c3RyeXpmb2lwcmVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5ODY1NjcsImV4cCI6MjA5NTU2MjU2N30.2XodPoFyEaUSLD7fW2HXzl0qJC6ohdKFIHLdgFrZzKI'
 const H = { 'Authorization': `Bearer ${SUPABASE_KEY}`, 'apikey': SUPABASE_KEY }
 
-// Custo claude-sonnet-4-6
-// Calibrado com dados reais: US$ 4,40 / 111 conversas = US$ 0,03964/conv
-// 10.963 tokens input (system prompt ~3k + histórico + mensagem) + 450 output
-const CUSTO_INPUT  = 3 / 1_000_000   // $3 por MTok input
-const CUSTO_OUTPUT = 15 / 1_000_000  // $15 por MTok output
-const TOK_IN  = 10963
+// Custo claude-sonnet-4-6 — $3/MTok input + $15/MTok output
+// Calibrado com dados reais medidos em produção (com cache ativo): ~US$0,012/msg em uso concorrente
+const CUSTO_INPUT = 3 / 1_000_000
+const CUSTO_OUTPUT = 15 / 1_000_000
+const TOK_IN = 10963
 const TOK_OUT = 450
 const CUSTO_CONV_USD = (TOK_IN * CUSTO_INPUT) + (TOK_OUT * CUSTO_OUTPUT)
 
@@ -40,11 +40,23 @@ function useIsMobile() {
   useEffect(() => { const fn = () => setM(window.innerWidth < 640); window.addEventListener('resize', fn); return () => window.removeEventListener('resize', fn) }, [])
   return m
 }
-function gerarSemanas() { const a = new Date().getFullYear(); return Array.from({ length: 52 }, (_, i) => `${a}-W${String(i + 1).padStart(2, '0')}`) }
-function gerarMeses() {
-  const a = new Date().getFullYear()
-  const n = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
-  return Array.from({ length: 12 }, (_, i) => ({ value: `${a}-${String(i + 1).padStart(2, '0')}`, label: `${n[i]} ${a}` }))
+
+// Brasília = UTC-3 fixo (sem horário de verão desde 2019)
+function paraDataBrasilia(isoStr) {
+  if (!isoStr) return null
+  const d = new Date(isoStr)
+  d.setHours(d.getHours() - 3)
+  return d.toISOString().split('T')[0]
+}
+function inicioDiaBrasiliaParaUTC(diaStr) {
+  // diaStr = "YYYY-MM-DD" em horário de Brasília -> retorna Date do instante 00:00 Brasília em UTC
+  const [y, m, d] = diaStr.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d, 3, 0, 0))
+}
+function hojeBrasiliaStr() {
+  const agora = new Date()
+  agora.setHours(agora.getHours() - 3)
+  return agora.toISOString().split('T')[0]
 }
 
 const mainTabsDef = [
@@ -61,107 +73,118 @@ const mainTabsDef = [
 export default function App() {
   const mobile = useIsMobile()
   const [allAnalises, setAllAnalises] = useState([])
-  const [data, setData] = useState(null)
   const [alunos, setAlunos] = useState([])
   const [loading, setLoading] = useState(true)
   const [mainTab, setMainTab] = useState('geral')
   const [copyTab, setCopyTab] = useState('semana')
-  const [periodoTipo, setPeriodoTipo] = useState('semana')
-  const [periodoSel, setPeriodoSel] = useState('')
-  const [todasSemanas] = useState(gerarSemanas)
-  const [todosMeses] = useState(gerarMeses)
   const [fantasmas, setFantasmas] = useState([])
   const [alunosSemProgresso, setAlunosSemProgresso] = useState([])
   const [copied, setCopied] = useState(null)
   const [usdBrl, setUsdBrl] = useState(5.70)
-  const [convDiarias, setConvDiarias] = useState([])
   const [diaSel, setDiaSel] = useState(null)
   const [alunosAtivos, setAlunosAtivos] = useState([])
   const [convPorAluno, setConvPorAluno] = useState({})
   const [revisoes, setRevisoes] = useState([])
   const [revisaoFiltro, setRevisaoFiltro] = useState('pendente')
+  const [todasConversas, setTodasConversas] = useState([])
+  const [periodoModo, setPeriodoModo] = useState('7dias') // 'hoje' | '7dias' | 'personalizado'
+  const [rangeInicio, setRangeInicio] = useState('')
+  const [rangeFim, setRangeFim] = useState('')
+  const [diagnosticando, setDiagnosticando] = useState({})
+  const [linkForms, setLinkForms] = useState({})
+  const [linkSalvando, setLinkSalvando] = useState({})
+  const [live, setLive] = useState(false)
+  const reloadTimer = useRef(null)
+
+  const data = allAnalises[0] || null // última análise qualitativa (crise/dores/módulos) — sempre a mais recente
+
+  async function load() {
+    try {
+      const cambio = await getUSDtoBRL()
+      setUsdBrl(cambio)
+
+      const [rAnal, rAlunos, rConvAll, rRevisoes] = await Promise.all([
+        fetch(`${SUPABASE_URL}/analises?order=criado_em.desc&limit=60`, { headers: H }).then(r => r.json()),
+        fetch(`${SUPABASE_URL}/alunos?ativo=eq.true&select=id,nome,telefone,produto,criado_em`, { headers: H }).then(r => r.json()),
+        fetch(`${SUPABASE_URL}/conversas?select=aluno_id,telefone,role,mensagem,criado_em&order=criado_em.desc&limit=10000`, { headers: H }).then(r => r.json()),
+        fetch(`${SUPABASE_URL}/revisoes_pendentes?order=criado_em.desc&limit=300`, { headers: H }).then(r => r.json()),
+      ])
+
+      const analises = (rAnal || []).filter(r => (r.total_ativos || 0) > 0)
+      setAllAnalises(analises)
+
+      const alunosArr = rAlunos || []
+      const convArr = rConvAll || []
+      setAlunos(alunosArr)
+      setTodasConversas(convArr)
+
+      const comConv = new Set(convArr.map(c => c.aluno_id))
+      setFantasmas(alunosArr.filter(a => !comConv.has(a.id)))
+
+      const totalConvUser = convArr.filter(c => c.role === 'user').length
+      const totalAlunosComConv = new Set(convArr.filter(c => c.role === 'user').map(c => c.aluno_id)).size
+      const mediaConvAluno = totalAlunosComConv > 0 ? totalConvUser / totalAlunosComConv : 5
+      const porAlunoTemp = {}
+      convArr.filter(c => c.role === 'user').forEach(c => {
+        if (c.aluno_id) porAlunoTemp[c.aluno_id] = (porAlunoTemp[c.aluno_id] || 0) + 1
+      })
+      setAlunosSemProgresso(alunosArr.filter(a => {
+        const dias = a.criado_em ? Math.floor((Date.now() - new Date(a.criado_em)) / 86400000) : 0
+        const msgs = porAlunoTemp[a.id] || 0
+        return dias > 7 && comConv.has(a.id) && msgs < (mediaConvAluno * 0.3)
+      }))
+
+      const porAluno = {}
+      convArr.filter(c => c.role === 'user').forEach(c => {
+        if (c.aluno_id) porAluno[c.aluno_id] = (porAluno[c.aluno_id] || 0) + 1
+      })
+      setConvPorAluno(porAluno)
+      setAlunosAtivos(alunosArr.filter(a => comConv.has(a.id) || Object.keys(porAluno).includes(a.id)))
+
+      // auto-resolver falhas técnicas que já sumiram sozinhas: se o mesmo telefone teve
+      // uma mensagem depois da falha registrada, o problema provavelmente já foi superado
+      const pendentesFalhas = (rRevisoes || []).filter(r => r.tipo === 'falha_tecnica' && r.status === 'pendente' && r.telefone)
+      const paraAutoResolver = pendentesFalhas.filter(r => {
+        return convArr.some(c => c.telefone && (c.telefone === r.telefone || `+${c.telefone}` === r.telefone) && new Date(c.criado_em) > new Date(r.criado_em))
+      })
+      if (paraAutoResolver.length > 0) {
+        await Promise.all(paraAutoResolver.map(r =>
+          fetch(`${SUPABASE_URL}/revisoes_pendentes?id=eq.${r.id}`, {
+            method: 'PATCH', headers: { ...H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ status: 'resolvido', resolvido_em: new Date().toISOString() })
+          }).catch(() => {})
+        ))
+        const idsResolvidos = new Set(paraAutoResolver.map(r => r.id))
+        setRevisoes((rRevisoes || []).map(r => idsResolvidos.has(r.id) ? { ...r, status: 'resolvido' } : r))
+      } else {
+        setRevisoes(rRevisoes || [])
+      }
+
+    } catch (e) { console.error(e) }
+    finally { setLoading(false) }
+  }
 
   useEffect(() => {
-    async function load() {
-      try {
-        const cambio = await getUSDtoBRL()
-        setUsdBrl(cambio)
-
-        const [rAnal, rAlunos, rConvAll, rRevisoes] = await Promise.all([
-          fetch(`${SUPABASE_URL}/analises?order=criado_em.desc&limit=60`, { headers: H }).then(r => r.json()),
-          fetch(`${SUPABASE_URL}/alunos?ativo=eq.true&select=id,nome,telefone,produto,criado_em`, { headers: H }).then(r => r.json()),
-          fetch(`${SUPABASE_URL}/conversas?select=aluno_id,telefone,role,mensagem,criado_em&order=criado_em.desc&limit=10000`, { headers: H }).then(r => r.json()),
-          fetch(`${SUPABASE_URL}/revisoes_pendentes?order=criado_em.desc&limit=300`, { headers: H }).then(r => r.json()),
-        ])
-        setRevisoes(rRevisoes || [])
-
-        const analises = (rAnal || []).filter(r => (r.total_ativos || 0) > 0)
-        if (analises.length > 0) { setAllAnalises(analises); setData(analises[0]); setPeriodoSel(analises[0].semana || '') }
-
-        const alunosArr = rAlunos || []
-        const convArr = rConvAll || []
-        setAlunos(alunosArr)
-
-        const comConv = new Set(convArr.map(c => c.aluno_id))
-        setFantasmas(alunosArr.filter(a => !comConv.has(a.id)))
-
-        const totalConvUser = convArr.filter(c => c.role === 'user').length
-        const totalAlunosComConv = new Set(convArr.filter(c => c.role === 'user').map(c => c.aluno_id)).size
-        const mediaConvAluno = totalAlunosComConv > 0 ? totalConvUser / totalAlunosComConv : 5
-        const porAlunoTemp = {}
-        convArr.filter(c => c.role === 'user').forEach(c => {
-          if (c.aluno_id) porAlunoTemp[c.aluno_id] = (porAlunoTemp[c.aluno_id] || 0) + 1
-        })
-        setAlunosSemProgresso(alunosArr.filter(a => {
-          const dias = a.criado_em ? Math.floor((Date.now() - new Date(a.criado_em)) / 86400000) : 0
-          const msgs = porAlunoTemp[a.id] || 0
-          return dias > 7 && comConv.has(a.id) && msgs < (mediaConvAluno * 0.3)
-        }))
-
-        const toLocalDate = (isoStr) => {
-          if (!isoStr) return null
-          const d = new Date(isoStr)
-          d.setHours(d.getHours() - 3)
-          return d.toISOString().split('T')[0]
-        }
-        const hoje = new Date()
-        hoje.setHours(hoje.getHours() - 3)
-        const hojeStr = hoje.toISOString().split('T')[0]
-        const dias14 = Array.from({ length: 14 }, (_, i) => {
-          const d = new Date(hojeStr)
-          d.setDate(d.getDate() - 13 + i)
-          return d.toISOString().split('T')[0]
-        })
-        const contDia = {}
-        dias14.forEach(d => { contDia[d] = 0 })
-        convArr.filter(c => c.role === 'user').forEach(c => {
-          const dia = toLocalDate(c.criado_em)
-          if (dia && contDia[dia] !== undefined) contDia[dia]++
-        })
-        setConvDiarias(dias14.map(d => ({
-          dia: d.slice(5),
-          total: contDia[d] || 0,
-          data: d,
-        })))
-
-        const porAluno = {}
-        convArr.filter(c => c.role === 'user').forEach(c => {
-          if (c.aluno_id) porAluno[c.aluno_id] = (porAluno[c.aluno_id] || 0) + 1
-        })
-        setConvPorAluno(porAluno)
-        setAlunosAtivos(alunosArr.filter(a => comConv.has(a.id) || Object.keys(porAluno).includes(a.id)))
-
-      } catch (e) { console.error(e) }
-      finally { setLoading(false) }
-    }
     load()
+    const hoje = hojeBrasiliaStr()
+    setRangeFim(hoje)
+    const d = new Date(hoje); d.setDate(d.getDate() - 6)
+    setRangeInicio(d.toISOString().split('T')[0])
   }, [])
 
+  // tempo real: qualquer mudança nas tabelas relevantes recarrega os dados (com debounce)
   useEffect(() => {
-    if (!allAnalises.length || !periodoSel) return
-    const found = periodoTipo === 'semana' ? allAnalises.find(r => r.semana === periodoSel) : allAnalises.find(r => r.mes === periodoSel)
-    setData(found || null)
-  }, [periodoSel, periodoTipo, allAnalises])
+    const agendar = () => {
+      if (reloadTimer.current) clearTimeout(reloadTimer.current)
+      reloadTimer.current = setTimeout(() => load(), 1500)
+    }
+    const channel = supabase.channel('dashboard-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversas' }, agendar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'revisoes_pendentes' }, agendar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alunos' }, agendar)
+      .subscribe((status) => setLive(status === 'SUBSCRIBED'))
+    return () => { supabase.removeChannel(channel); if (reloadTimer.current) clearTimeout(reloadTimer.current) }
+  }, [])
 
   const copyNum = (n) => { navigator.clipboard.writeText(n); setCopied(n); setTimeout(() => setCopied(null), 2000) }
 
@@ -173,6 +196,38 @@ export default function App() {
         body: JSON.stringify({ status: 'resolvido', resolvido_em: new Date().toISOString() })
       })
     } catch (e) { console.error(e) }
+  }
+
+  async function diagnosticar(r) {
+    setDiagnosticando(prev => ({ ...prev, [r.id]: true }))
+    try {
+      const resp = await fetch(DIAGNOSTICAR_WEBHOOK, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: r.id, tipo: r.tipo, workflow: r.workflow, node: r.node, detalhe: r.detalhe, execution_id: r.execution_id, telefone: r.telefone, nome: r.nome, email: r.email })
+      })
+      const json = await resp.json()
+      setRevisoes(prev => prev.map(x => x.id === r.id ? { ...x, diagnostico: json.diagnostico } : x))
+    } catch (e) { console.error(e) }
+    finally { setDiagnosticando(prev => ({ ...prev, [r.id]: false })) }
+  }
+
+  function updateLinkForm(id, field, value) {
+    setLinkForms(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }))
+  }
+
+  async function vincularAluno(r) {
+    const form = linkForms[r.id] || {}
+    if (!form.nome || !form.email) return
+    setLinkSalvando(prev => ({ ...prev, [r.id]: true }))
+    try {
+      const telefone = (form.telefone || r.telefone || '').trim()
+      await fetch(`${SUPABASE_URL}/alunos`, {
+        method: 'POST', headers: { ...H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ nome: form.nome, email: form.email, telefone: telefone.startsWith('+') ? telefone : `+${telefone}`, produto: form.produto || 'resgate', ativo: true })
+      })
+      await marcarResolvido(r.id)
+    } catch (e) { console.error(e) }
+    finally { setLinkSalvando(prev => ({ ...prev, [r.id]: false })) }
   }
 
   if (loading) return (
@@ -196,37 +251,56 @@ export default function App() {
   const pctCCC = totalP > 0 ? Math.round((totalCCC / totalP) * 100) : 0
   const pctResgate = 100 - pctCCC
 
-  const mesSel = data?.mes || ''
-  const semanasSdoMes = allAnalises.filter(r => r.mes === mesSel)
-  const convDoMes = semanasSdoMes.reduce((s, r) => s + (r.total_conversas || 0), 0)
-  const convSemana = data?.total_conversas || 0
+  // ── PERÍODO (live, calculado direto das conversas reais — não depende do batch das 03:00) ──
+  const rangeDias = (() => {
+    if (periodoModo === 'hoje') { const h = hojeBrasiliaStr(); return [h, h] }
+    if (periodoModo === '7dias') { const h = hojeBrasiliaStr(); const d = new Date(h); d.setDate(d.getDate() - 6); return [d.toISOString().split('T')[0], h] }
+    return [rangeInicio || hojeBrasiliaStr(), rangeFim || hojeBrasiliaStr()]
+  })()
+  const [rIni, rFim] = rangeDias
+  const iniUTC = inicioDiaBrasiliaParaUTC(rIni)
+  const fimUTC = new Date(inicioDiaBrasiliaParaUTC(rFim).getTime() + 24 * 3600 * 1000)
 
-  const convPeriodo = periodoTipo === 'mes' ? convDoMes : convSemana
+  const conversasNoPeriodo = todasConversas.filter(c => {
+    const t = new Date(c.criado_em)
+    return t >= iniUTC && t < fimUTC
+  })
+  const convPeriodo = conversasNoPeriodo.filter(c => c.role === 'user').length
+  const alunosUnicosPeriodo = new Set(conversasNoPeriodo.filter(c => c.role === 'user').map(c => c.aluno_id)).size
   const custoUSD = convPeriodo * CUSTO_CONV_USD
   const custoBRL = custoUSD * usdBrl
 
+  // dias no período (pra gráfico diário) — limitado a 60 dias pra não pesar
+  const listaDias = (() => {
+    const dias = []
+    let cursor = new Date(iniUTC)
+    let guard = 0
+    while (cursor < fimUTC && guard < 60) {
+      dias.push(paraDataBrasilia(new Date(cursor.getTime() + 3 * 3600 * 1000).toISOString()))
+      cursor = new Date(cursor.getTime() + 24 * 3600 * 1000)
+      guard++
+    }
+    return dias
+  })()
+  const convDiarias = listaDias.map(dia => {
+    const doDia = todasConversas.filter(c => c.role === 'user' && paraDataBrasilia(c.criado_em) === dia)
+    return { dia: dia.slice(5), data: dia, total: doDia.length, unicos: new Set(doDia.map(c => c.aluno_id)).size }
+  })
+
   const semanasComDados = allAnalises.filter(r => (r.total_conversas || 0) > 0)
-  const mediaConvSemana = semanasComDados.length > 0
-    ? semanasComDados.reduce((s, r) => s + (r.total_conversas || 0), 0) / semanasComDados.length
-    : convSemana
+
+  const convPorAlunoMedia = alunosAtivos.length > 0 ? (todasConversas.filter(c => c.role === 'user').length / alunosAtivos.length) : 0
   const semanasNoMes = 4
-  const custoMesEstUSD = mediaConvSemana * semanasNoMes * CUSTO_CONV_USD
+  const baseAtivos = alunosAtivos.length
+  const custoMesEstUSD = convPorAlunoMedia * baseAtivos * 4.3 * CUSTO_CONV_USD
   const custoMesEstBRL = custoMesEstUSD * usdBrl
-
-  const custoMesRealUSD = convDoMes * CUSTO_CONV_USD
-  const custoMesRealBRL = custoMesRealUSD * usdBrl
-
-  const convPorAlunoMedia = semanasComDados.length > 0
-    ? semanasComDados.reduce((s, r) => s + ((r.total_conversas || 0) / Math.max(r.total_ativos || 1, 1)), 0) / semanasComDados.length
-    : (data?.total_ativos ? convSemana / data.total_ativos : 0)
-  const baseProjecao = `${convPorAlunoMedia.toFixed(1)} conv/aluno/sem · média de ${semanasComDados.length} semana(s)`
+  const baseProjecao = `${convPorAlunoMedia.toFixed(1)} conv/aluno/sem · ${baseAtivos} alunos realmente ativos (não a base total)`
 
   const projecoes = [
-    { label: 'Atual', leads: data?.total_ativos || 0 },
-    { label: '2.5x', leads: Math.round((data?.total_ativos || 0) * 2.5) },
-    { label: '5x', leads: Math.round((data?.total_ativos || 0) * 5) },
-    { label: '10x', leads: Math.round((data?.total_ativos || 0) * 10) },
-    { label: '20x', leads: Math.round((data?.total_ativos || 0) * 20) },
+    { label: 'Ativos hoje', leads: baseAtivos },
+    { label: '2x', leads: Math.round(baseAtivos * 2) },
+    { label: '5x', leads: Math.round(baseAtivos * 5) },
+    { label: '10x', leads: Math.round(baseAtivos * 10) },
   ].map(p => {
     const cSem = Math.round(convPorAlunoMedia * p.leads)
     const cMes = cSem * semanasNoMes
@@ -244,14 +318,8 @@ export default function App() {
     custoUSD: parseFloat(((r.total_conversas || 0) * CUSTO_CONV_USD).toFixed(3)),
   }))
 
-  const diasEng = [{ d: 'Seg', v: 18 }, { d: 'Ter', v: 24 }, { d: 'Qua', v: 31 }, { d: 'Qui', v: 27 }, { d: 'Sex', v: 22 }, { d: 'Sáb', v: 14 }, { d: 'Dom', v: 9 }]
-  const horasEng = [{ h: '6h', v: 3 }, { h: '8h', v: 8 }, { h: '10h', v: 14 }, { h: '12h', v: 11 }, { h: '14h', v: 9 }, { h: '16h', v: 12 }, { h: '18h', v: 19 }, { h: '20h', v: 22 }, { h: '22h', v: 15 }]
-
   const gridCols = { 2: 'md:grid-cols-2', 3: 'md:grid-cols-3', 4: 'md:grid-cols-4' }
   const g = (cols) => `grid grid-cols-1 ${gridCols[cols]} gap-3.5 mb-4`
-
-  const fantResgate = fantasmas.filter(a => a.produto === 'resgate')
-  const fantCCC = fantasmas.filter(a => a.produto === 'ccc')
 
   const rankingAtivos = alunosAtivos
     .map(a => ({ ...a, msgs: convPorAluno[a.id] || 0 }))
@@ -265,42 +333,45 @@ export default function App() {
   const totalFalhas = revisoes.filter(r => r.tipo === 'falha_tecnica' && r.status === 'pendente').length
   const totalVerificacoes = revisoes.filter(r => r.tipo === 'verificacao_manual' && r.status === 'pendente').length
 
+  const rotuloPeriodo = periodoModo === 'hoje' ? 'hoje' : periodoModo === '7dias' ? 'últimos 7 dias' : `${rIni} a ${rFim}`
+
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-[1080px] mx-auto px-3.5 py-5 md:px-7 md:py-8">
 
         {/* HEADER */}
-        <div className="flex justify-between items-start mb-6 flex-wrap gap-3.5">
+        <div className="flex justify-between items-start mb-5 flex-wrap gap-3.5">
           <div>
             <div className="flex items-center gap-2 mb-0.5">
-              <div className="w-[7px] h-[7px] rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]" />
+              <div className={`w-[7px] h-[7px] rounded-full ${live ? 'bg-green-500 shadow-[0_0_8px_#22c55e]' : 'bg-muted-foreground'}`} />
               <div className="text-lg md:text-[22px] font-bold tracking-tight text-foreground">S.O.S Roncada</div>
+              {live && <Pill className="bg-green-500/15 text-green-400">ao vivo</Pill>}
             </div>
-            <div className="text-[11px] text-muted-foreground pl-[15px]">Central de inteligência · atualizado diariamente às 03:00</div>
+            <div className="text-[11px] text-muted-foreground pl-[15px]">Central de inteligência · dados de volume/custo em tempo real</div>
           </div>
-          <div className="flex gap-2 items-center flex-wrap">
-            <div className="flex bg-accent border border-border rounded-lg overflow-hidden">
-              {['semana', 'mes'].map(t => (
-                <button
-                  key={t}
-                  onClick={() => { setPeriodoTipo(t); setPeriodoSel(t === 'semana' ? (allAnalises[0]?.semana || '') : (allAnalises[0]?.mes || '')) }}
-                  className={`px-3.5 py-1.5 text-[11px] transition-colors ${periodoTipo === t ? 'bg-primary text-primary-foreground font-bold' : 'text-muted-foreground'}`}
-                >
-                  {t === 'semana' ? 'Semana' : 'Mês'}
-                </button>
-              ))}
+        </div>
+
+        {/* PERÍODO */}
+        <div className="flex gap-2 items-center flex-wrap mb-5">
+          <div className="flex bg-accent border border-border rounded-lg overflow-hidden">
+            {[['hoje', 'Hoje'], ['7dias', 'Semana'], ['personalizado', 'Personalizado']].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setPeriodoModo(id)}
+                className={`px-3.5 py-1.5 text-[11px] transition-colors ${periodoModo === id ? 'bg-primary text-primary-foreground font-bold' : 'text-muted-foreground'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {periodoModo === 'personalizado' && (
+            <div className="flex items-center gap-1.5">
+              <Input type="date" value={rangeInicio} onChange={e => setRangeInicio(e.target.value)} className="h-8 w-[135px] text-[11px] bg-accent border-border" />
+              <span className="text-muted-foreground text-xs">até</span>
+              <Input type="date" value={rangeFim} onChange={e => setRangeFim(e.target.value)} className="h-8 w-[135px] text-[11px] bg-accent border-border" />
             </div>
-            <Select value={periodoSel} onValueChange={setPeriodoSel}>
-              <SelectTrigger className="h-8 min-w-[130px] text-[11px] bg-accent border-border">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(periodoTipo === 'semana' ? todasSemanas.map(s => ({ value: s, label: s })) : todosMeses).map(m => (
-                  <SelectItem key={m.value || m} value={m.value || m}>{m.label || m}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          )}
+          <span className="text-[11px] text-muted-foreground">período: {rotuloPeriodo}</span>
         </div>
 
         {/* TABS */}
@@ -322,26 +393,26 @@ export default function App() {
         {mainTab === 'geral' && (
           <>
             <div className={g(4)}>
-              <Kpi label="Alunos ativos" value={data?.total_ativos || 0} colorClass="bg-primary" icon="👥" />
-              <Kpi label="Conversas na semana" value={data?.total_conversas || 0} colorClass="bg-blue-500" icon="💬" />
+              <Kpi label="Alunos ativos (real)" value={alunosAtivos.length} colorClass="bg-primary" icon="👥" sub={`de ${alunos.length} cadastrados`} />
+              <Kpi label={`Conversas — ${rotuloPeriodo}`} value={convPeriodo} colorClass="bg-sky-500" icon="💬" sub={`${alunosUnicosPeriodo} alunos únicos`} />
               <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon="😶" />
               <Kpi
-                label={periodoTipo === 'mes' ? 'Custo real do mês' : 'Custo da semana'}
+                label={`Custo — ${rotuloPeriodo}`}
                 value={`US$ ${custoUSD.toFixed(2)}`}
                 colorClass="bg-muted-foreground"
                 icon="💵"
-                sub={periodoTipo === 'mes' ? `R$ ${custoBRL.toFixed(2)} · ${semanasSdoMes.length} sem. reais` : `R$ ${custoBRL.toFixed(2)} · câmbio ${usdBrl.toFixed(2)}`}
+                sub={`R$ ${custoBRL.toFixed(2)} · câmbio ${usdBrl.toFixed(2)}`}
               />
             </div>
 
             <div className={g(2)}>
               <SectionCard title="Distribuição por produto">
-                <ProgressRow label="Resgate" pct={pctResgate} colorClass="bg-blue-500" right={`${pctResgate}%`} />
+                <ProgressRow label="Resgate" pct={pctResgate} colorClass="bg-sky-500" right={`${pctResgate}%`} />
                 <ProgressRow label="CCC" pct={pctCCC} colorClass="bg-purple-400" right={`${pctCCC}%`} />
                 <div className="border-t border-border my-4" />
                 <div className="flex gap-2.5">
                   <div className="flex-1 bg-accent rounded-lg p-2.5 text-center">
-                    <div className="text-xl font-bold text-blue-500">{totalResgate}</div>
+                    <div className="text-xl font-bold text-sky-500">{totalResgate}</div>
                     <div className="text-[10px] text-muted-foreground mt-0.5">Resgate</div>
                   </div>
                   <div className="flex-1 bg-accent rounded-lg p-2.5 text-center">
@@ -350,16 +421,16 @@ export default function App() {
                   </div>
                 </div>
               </SectionCard>
-              <SectionCard title="Conversas — histórico semanal">
+              <SectionCard title="Conversas — histórico semanal (análise em lote)">
                 {historico.length > 1 ? (
                   <ResponsiveContainer width="100%" height={130}>
                     <AreaChart data={historico} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}>
-                      <defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.amber} stopOpacity={0.25} /><stop offset="95%" stopColor={C.amber} stopOpacity={0} /></linearGradient></defs>
+                      <defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.primary} stopOpacity={0.25} /><stop offset="95%" stopColor={C.primary} stopOpacity={0} /></linearGradient></defs>
                       <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
                       <XAxis dataKey="s" tick={{ fontSize: 10, fill: C.muted }} />
                       <YAxis tick={{ fontSize: 10, fill: C.muted }} />
                       <Tooltip contentStyle={tooltipStyle} />
-                      <Area type="monotone" dataKey="conv" stroke={C.amber} fill="url(#ga)" strokeWidth={2} dot={false} name="conversas" />
+                      <Area type="monotone" dataKey="conv" stroke={C.primary} fill="url(#ga)" strokeWidth={2} dot={false} name="conversas" />
                     </AreaChart>
                   </ResponsiveContainer>
                 ) : <EmptyState />}
@@ -368,7 +439,7 @@ export default function App() {
 
             <SectionCard
               className="mb-4"
-              title={<>Mensagens por dia — últimos 14 dias {diaSel && <span className="text-primary font-semibold">· {diaSel}</span>}</>}
+              title={<>Mensagens por dia {diaSel && <span className="text-primary font-semibold">· {diaSel}</span>}</>}
               right={diaSel && <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setDiaSel(null)}>✕ Limpar</Button>}
             >
               <ResponsiveContainer width="100%" height={140}>
@@ -379,48 +450,22 @@ export default function App() {
                   <YAxis tick={{ fontSize: 9, fill: C.muted }} />
                   <Tooltip contentStyle={tooltipStyle} formatter={v => [v, 'mensagens']} />
                   <Bar dataKey="total" name="mensagens" radius={[4, 4, 0, 0]}>
-                    {convDiarias.map((d, i) => <Cell key={i} fill={d.data === diaSel ? C.amber : C.blue} />)}
+                    {convDiarias.map((d, i) => <Cell key={i} fill={d.data === diaSel ? C.primary : C.blue} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
               {diaSel && (
                 <div className="mt-3 px-3.5 py-2.5 bg-accent rounded-lg text-xs text-muted-foreground">
-                  📅 <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens de usuários
+                  📅 <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens · {convDiarias.find(d => d.data === diaSel)?.unicos || 0} alunos únicos
                   <span className="ml-3">· Custo estimado: US$ {((convDiarias.find(d => d.data === diaSel)?.total || 0) * CUSTO_CONV_USD).toFixed(3)}</span>
                 </div>
               )}
             </SectionCard>
 
-            <div className={g(2)}>
-              <SectionCard title="Melhores dias da semana">
-                <ResponsiveContainer width="100%" height={130}>
-                  <BarChart data={diasEng} barSize={16} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                    <XAxis dataKey="d" tick={{ fontSize: 10, fill: C.muted }} />
-                    <YAxis tick={{ fontSize: 10, fill: C.muted }} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Bar dataKey="v" fill={C.blue} radius={[4, 4, 0, 0]} name="conversas" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </SectionCard>
-              <SectionCard title="Horários de pico">
-                <ResponsiveContainer width="100%" height={130}>
-                  <AreaChart data={horasEng} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}>
-                    <defs><linearGradient id="gh" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.green} stopOpacity={0.3} /><stop offset="95%" stopColor={C.green} stopOpacity={0} /></linearGradient></defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                    <XAxis dataKey="h" tick={{ fontSize: 10, fill: C.muted }} />
-                    <YAxis tick={{ fontSize: 10, fill: C.muted }} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Area type="monotone" dataKey="v" stroke={C.green} fill="url(#gh)" strokeWidth={2} dot={false} name="mensagens" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </SectionCard>
-            </div>
-
             {historico.length > 1 && (
-              <SectionCard title="Evolução da base">
+              <SectionCard title="Evolução da base (análise semanal em lote)">
                 <div className="flex gap-4 mb-3 flex-wrap">
-                  {[[C.amber, 'ativos'], [C.red, 'em crise'], [C.green, 'progresso']].map(([c, l]) => (
+                  {[[C.primary, 'ativos'], [C.red, 'em crise'], [C.green, 'progresso']].map(([c, l]) => (
                     <div key={l} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                       <div className="w-2 h-2 rounded-sm" style={{ background: c }} />{l}
                     </div>
@@ -432,7 +477,7 @@ export default function App() {
                     <XAxis dataKey="s" tick={{ fontSize: 10, fill: C.muted }} />
                     <YAxis tick={{ fontSize: 10, fill: C.muted }} />
                     <Tooltip contentStyle={tooltipStyle} />
-                    <Line type="monotone" dataKey="ativos" stroke={C.amber} strokeWidth={2} dot={{ r: 3 }} name="ativos" />
+                    <Line type="monotone" dataKey="ativos" stroke={C.primary} strokeWidth={2} dot={{ r: 3 }} name="ativos" />
                     <Line type="monotone" dataKey="crise" stroke={C.red} strokeWidth={2} dot={{ r: 3 }} name="crise" strokeDasharray="4 3" />
                     <Line type="monotone" dataKey="prog" stroke={C.green} strokeWidth={2} dot={{ r: 3 }} name="progresso" />
                   </LineChart>
@@ -471,18 +516,18 @@ export default function App() {
               </SectionCard>
               <SectionCard title="Top dores — Resgate">
                 {topDores.length > 0
-                  ? [...topDores].sort((a, b) => b.percentual - a.percentual).map((d, i) => <ProgressRow key={i} rank={i + 1} label={d.dor} pct={d.percentual} colorClass="bg-blue-500" />)
+                  ? [...topDores].sort((a, b) => b.percentual - a.percentual).map((d, i) => <ProgressRow key={i} rank={i + 1} label={d.dor} pct={d.percentual} colorClass="bg-sky-500" />)
                   : <EmptyState />}
               </SectionCard>
             </div>
             <SectionCard title="Módulos mencionados nas conversas">
               <div className="bg-accent rounded-lg px-3.5 py-2.5 mb-3.5 text-[11px] text-muted-foreground">
-                💡 <strong className="text-foreground">Como interpretar:</strong> o clone identifica qual módulo é mais relevante para a dúvida do aluno e o menciona na resposta. Alta frequência de um módulo = muitos alunos com dúvidas daquele tema específico. Isso indica onde o conteúdo precisa de mais suporte ou aprofundamento.
+                💡 <strong className="text-foreground">Como interpretar:</strong> o clone identifica qual módulo é mais relevante para a dúvida do aluno e o menciona na resposta. Alta frequência de um módulo = muitos alunos com dúvidas daquele tema específico.
               </div>
               {topModulos.length > 0
                 ? [...topModulos].sort((a, b) => b.percentual - a.percentual).map((m, i) => (
                   <div key={i} className="mb-3">
-                    <ProgressRow rank={i + 1} label={m.modulo} pct={m.percentual} colorClass="bg-blue-500" />
+                    <ProgressRow rank={i + 1} label={m.modulo} pct={m.percentual} colorClass="bg-sky-500" />
                   </div>
                 ))
                 : <EmptyState />}
@@ -533,7 +578,6 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                <div className="text-[10px] text-muted-foreground">⚠️ Dados reais após ajuste no workflow de análise</div>
               </SectionCard>
             </div>
             <SectionCard title="Top dores — CCC">
@@ -551,22 +595,28 @@ export default function App() {
           <>
             <SectionTitle icon="🚀" title="Central de operação" sub="Engajamento, alunos ativos e reengajamento" />
 
-            <SectionCard className="mb-4" title="📅 Engajamento diário — últimos 14 dias">
+            <div className={g(3)}>
+              <Kpi label="Alunos ativos (conversaram)" value={alunosAtivos.length} colorClass="bg-primary" icon="👥" sub={`de ${alunos.length} cadastrados no total`} />
+              <Kpi label={`Alunos únicos — ${rotuloPeriodo}`} value={alunosUnicosPeriodo} colorClass="bg-sky-500" icon="🗣️" />
+              <Kpi label={`Mensagens — ${rotuloPeriodo}`} value={convPeriodo} colorClass="bg-purple-400" icon="💬" />
+            </div>
+
+            <SectionCard className="mb-4" title="📅 Alunos únicos por dia — engajamento real">
               <ResponsiveContainer width="100%" height={150}>
                 <BarChart data={convDiarias} barSize={mobile ? 12 : 18} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}
                   onClick={e => e?.activePayload && setDiaSel(e.activePayload[0]?.payload?.data)}>
                   <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
                   <XAxis dataKey="dia" tick={{ fontSize: 9, fill: C.muted }} />
                   <YAxis tick={{ fontSize: 9, fill: C.muted }} />
-                  <Tooltip contentStyle={tooltipStyle} formatter={v => [v, 'mensagens']} />
-                  <Bar dataKey="total" name="mensagens" radius={[4, 4, 0, 0]}>
-                    {convDiarias.map((d, i) => <Cell key={i} fill={d.data === diaSel ? C.amber : C.green} />)}
+                  <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [v, n === 'unicos' ? 'alunos únicos' : 'mensagens']} />
+                  <Bar dataKey="unicos" name="unicos" radius={[4, 4, 0, 0]}>
+                    {convDiarias.map((d, i) => <Cell key={i} fill={d.data === diaSel ? C.primary : C.green} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
               {diaSel && (
                 <div className="mt-2.5 px-3 py-2 bg-accent rounded-lg text-xs text-muted-foreground">
-                  📅 <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens · US$ {((convDiarias.find(d => d.data === diaSel)?.total || 0) * CUSTO_CONV_USD).toFixed(3)}
+                  📅 <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.unicos || 0} alunos únicos · {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens
                 </div>
               )}
             </SectionCard>
@@ -581,8 +631,8 @@ export default function App() {
                       <td className="px-2.5 py-2.5"><ProductBadge p={a.produto} /></td>
                       <td className="px-2.5 py-2.5">
                         <div className="flex items-center gap-2">
-                          <div className="w-15 h-[5px] bg-border rounded-full overflow-hidden" style={{ width: 60 }}>
-                            <div className="h-full rounded-full" style={{ width: `${Math.min((a.msgs / (rankingAtivos[0]?.msgs || 1)) * 100, 100)}%`, background: i === 0 ? C.amber : C.blue }} />
+                          <div className="h-[5px] bg-border rounded-full overflow-hidden" style={{ width: 60 }}>
+                            <div className="h-full rounded-full" style={{ width: `${Math.min((a.msgs / (rankingAtivos[0]?.msgs || 1)) * 100, 100)}%`, background: i === 0 ? C.primary : C.blue }} />
                           </div>
                           <span className="text-foreground font-semibold">{a.msgs}</span>
                         </div>
@@ -632,7 +682,7 @@ export default function App() {
             <SectionCard title={copyTab === 'semana' ? 'Ranking semanal — por citações' : 'Ranking mensal — por citações'} right={<Pill className="bg-primary/15 text-primary">{frasesCopy[copyTab].length} frases</Pill>}>
               {frasesCopy[copyTab].length > 0 ? frasesCopy[copyTab].map((f, i) => (
                 <div key={i} className={`py-3.5 flex gap-3.5 items-start ${i < frasesCopy[copyTab].length - 1 ? 'border-b border-border' : ''}`}>
-                  <div className={`min-w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${i === 0 ? 'bg-amber-500/20 text-amber-300' : 'bg-accent text-muted-foreground'}`}>#{i + 1}</div>
+                  <div className={`min-w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${i === 0 ? 'bg-primary/20 text-primary' : 'bg-accent text-muted-foreground'}`}>#{i + 1}</div>
                   <div className="flex-1">
                     <div className="text-[13px] text-foreground leading-relaxed italic mb-2">"{f.frase}"</div>
                     <div className="flex gap-1.5 flex-wrap items-center">
@@ -690,47 +740,26 @@ export default function App() {
         {mainTab === 'custo' && (
           <>
             <SectionTitle icon="💵" title="Custo do clone" sub={`claude-sonnet-4-6 · $3/MTok input + $15/MTok output · câmbio US$1 = R$${usdBrl.toFixed(2)} (tempo real)`} />
-            {periodoTipo === 'mes' && custoMesRealUSD > 0 && (
-              <div className="bg-green-500/10 border border-green-500/20 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground">
-                ✅ <strong className="text-green-500">Custo real acumulado — {mesSel}:</strong> US$ {custoMesRealUSD.toFixed(2)} · R$ {custoMesRealBRL.toFixed(2)} · {semanasSdoMes.length} semana(s) · {convDoMes} conversas
-              </div>
-            )}
+            <div className="bg-green-500/10 border border-green-500/20 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground">
+              ✅ <strong className="text-green-500">Custo real — {rotuloPeriodo}:</strong> US$ {custoUSD.toFixed(2)} · R$ {custoBRL.toFixed(2)} · {convPeriodo} conversas · {alunosUnicosPeriodo} alunos únicos
+            </div>
             <div className={g(3)}>
               <Kpi
-                label={periodoTipo === 'mes' ? 'Custo real do mês' : 'Custo da semana'}
+                label={`Custo — ${rotuloPeriodo}`}
                 value={`US$ ${custoUSD.toFixed(2)}`}
                 colorClass="bg-primary" icon="📅"
-                sub={`R$ ${custoBRL.toFixed(2)} · ${convPeriodo} conv.` + (periodoTipo === 'mes' ? ` · ${semanasSdoMes.length} sem.` : '')}
+                sub={`R$ ${custoBRL.toFixed(2)} · ${convPeriodo} conv.`}
               />
               <Kpi
-                label="Estimativa mensal"
+                label="Estimativa mensal (ritmo atual)"
                 value={`US$ ${custoMesEstUSD.toFixed(2)}`}
-                colorClass="bg-blue-500" icon="🗓️"
-                sub={`R$ ${custoMesEstBRL.toFixed(2)} · média de ${semanasComDados.length} sem. reais`}
+                colorClass="bg-sky-500" icon="🗓️"
+                sub={`R$ ${custoMesEstBRL.toFixed(2)} · baseado nos ${baseAtivos} alunos ativos reais`}
               />
-              <Kpi label="Custo por conversa" value={`US$ ${CUSTO_CONV_USD.toFixed(4)}`} colorClass="bg-muted-foreground" icon="💬" sub={`R$ ${(CUSTO_CONV_USD * usdBrl).toFixed(4)} · 800tok in + 300tok out`} />
+              <Kpi label="Custo por conversa (cache ativo)" value={`US$ ${CUSTO_CONV_USD.toFixed(4)}`} colorClass="bg-muted-foreground" icon="💬" sub="média — varia entre cache quente/frio" />
             </div>
 
-            {historico.length > 1 && (
-              <SectionCard className="mb-3.5" title="Custo semanal — histórico (US$)">
-                <ResponsiveContainer width="100%" height={160}>
-                  <AreaChart data={historico} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}>
-                    <defs><linearGradient id="gc" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={C.amber} stopOpacity={0.25} /><stop offset="95%" stopColor={C.amber} stopOpacity={0} /></linearGradient></defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                    <XAxis dataKey="s" tick={{ fontSize: 10, fill: C.muted }} />
-                    <YAxis tick={{ fontSize: 10, fill: C.muted }} tickFormatter={v => `$${v.toFixed(2)}`} />
-                    <Tooltip contentStyle={tooltipStyle} formatter={v => [`US$ ${v.toFixed(3)} · R$ ${(v * usdBrl).toFixed(2)}`, 'custo']} />
-                    <Area type="monotone" dataKey="custoUSD" stroke={C.amber} fill="url(#gc)" strokeWidth={2} dot={{ r: 3, fill: C.amber }} name="custo US$" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </SectionCard>
-            )}
-
-            <SectionCard
-              className="mb-3.5"
-              title={<>Custo por dia — últimos 14 dias (US$) {diaSel && <span className="text-primary font-semibold"> · {diaSel}</span>}</>}
-              right={diaSel && <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setDiaSel(null)}>✕</Button>}
-            >
+            <SectionCard className="mb-3.5" title={<>Custo por dia — {rotuloPeriodo} (US$) {diaSel && <span className="text-primary font-semibold"> · {diaSel}</span>}</>} right={diaSel && <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setDiaSel(null)}>✕</Button>}>
               <ResponsiveContainer width="100%" height={140}>
                 <BarChart data={convDiarias.map(d => ({ ...d, custoUSD: parseFloat((d.total * CUSTO_CONV_USD).toFixed(4)) }))} barSize={mobile ? 12 : 18} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}
                   onClick={e => e?.activePayload && setDiaSel(e.activePayload[0]?.payload?.data)}>
@@ -739,35 +768,27 @@ export default function App() {
                   <YAxis tick={{ fontSize: 9, fill: C.muted }} tickFormatter={v => `$${v.toFixed(3)}`} />
                   <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`US$ ${v.toFixed(4)} · R$ ${(v * usdBrl).toFixed(3)}`, 'custo']} />
                   <Bar dataKey="custoUSD" name="custo US$" radius={[4, 4, 0, 0]}>
-                    {convDiarias.map((d, i) => <Cell key={i} fill={d.data === diaSel ? C.amberSoft : C.amber} />)}
+                    {convDiarias.map((d, i) => <Cell key={i} fill={d.data === diaSel ? C.primarySoft : C.primary} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
-              {diaSel && (
-                <div className="mt-2.5 px-3.5 py-2.5 bg-accent rounded-lg text-xs">
-                  <span className="text-foreground font-semibold">📅 {diaSel}</span>
-                  <span className="text-muted-foreground ml-3">{convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens</span>
-                  <span className="text-primary ml-3 font-semibold">US$ {((convDiarias.find(d => d.data === diaSel)?.total || 0) * CUSTO_CONV_USD).toFixed(4)}</span>
-                  <span className="text-muted-foreground ml-2">· R$ {((convDiarias.find(d => d.data === diaSel)?.total || 0) * CUSTO_CONV_USD * usdBrl).toFixed(3)}</span>
-                </div>
-              )}
             </SectionCard>
 
-            <SectionCard className="mb-3.5" title="Projeção por escala">
+            <SectionCard className="mb-3.5" title="Projeção por escala — baseada em alunos ATIVOS de verdade">
               <div className="bg-accent rounded-lg px-3.5 py-2.5 mb-3.5 text-[11px] text-muted-foreground">
                 📐 <strong className="text-foreground">Base do cálculo:</strong> {baseProjecao}<br />
-                <span className="text-muted-foreground">Fórmula: leads × {convPorAlunoMedia.toFixed(1)} conv/aluno/sem × custo/conv (US$ {CUSTO_CONV_USD.toFixed(4)}) × câmbio R${usdBrl.toFixed(2)}</span>
+                <span className="text-muted-foreground">Antes esse cálculo usava o total de leads da base (496 cadastrados). Agora usa só quem realmente conversa com o clone.</span>
               </div>
-              <DataTable headers={['Escala', 'Leads', 'Conv/sem', 'Conv/mês', 'US$/sem', 'R$/sem', 'US$/mês', 'R$/mês']}>
+              <DataTable headers={['Escala', 'Alunos', 'Conv/sem', 'Conv/mês', 'US$/sem', 'R$/sem', 'US$/mês', 'R$/mês']}>
                 {projecoes.map((p, i) => (
                   <tr key={i} className={`border-b border-border ${i === 0 ? 'bg-primary/5' : ''}`}>
-                    <td className="px-2.5 py-2.5"><Pill className={i === 0 ? 'bg-amber-500/20 text-amber-300' : 'bg-accent text-muted-foreground'}>{p.label}</Pill></td>
+                    <td className="px-2.5 py-2.5"><Pill className={i === 0 ? 'bg-primary/20 text-primary' : 'bg-accent text-muted-foreground'}>{p.label}</Pill></td>
                     <td className="px-2.5 py-2.5 text-foreground font-medium">{p.leads.toLocaleString('pt-BR')}</td>
                     <td className="px-2.5 py-2.5 text-muted-foreground">{p.conv.toLocaleString('pt-BR')}</td>
                     <td className="px-2.5 py-2.5 text-muted-foreground">{p.convMes.toLocaleString('pt-BR')}</td>
                     <td className="px-2.5 py-2.5 text-primary font-semibold">US$ {p.usdSem}</td>
                     <td className="px-2.5 py-2.5 text-muted-foreground">R$ {p.brlSem}</td>
-                    <td className="px-2.5 py-2.5 text-blue-500 font-semibold">US$ {p.usdMes}</td>
+                    <td className="px-2.5 py-2.5 text-sky-500 font-semibold">US$ {p.usdMes}</td>
                     <td className="px-2.5 py-2.5 text-green-500 font-semibold">R$ {p.brlMes}</td>
                   </tr>
                 ))}
@@ -782,12 +803,12 @@ export default function App() {
                   <YAxis tick={{ fontSize: 10, fill: C.muted }} tickFormatter={v => `R$${v}`} />
                   <Tooltip contentStyle={tooltipStyle} formatter={(v, n, p) => [`R$ ${p.payload.brlMes}/mês · US$ ${p.payload.usdMes}/mês`, 'custo mensal']} />
                   <Bar dataKey="mesBRL" name="R$/mês" radius={[6, 6, 0, 0]}>
-                    {projecoes.map((_, i) => <Cell key={i} fill={i === 0 ? C.amber : i < 3 ? C.blue : C.purple} />)}
+                    {projecoes.map((_, i) => <Cell key={i} fill={i === 0 ? C.primary : i < 2 ? C.blue : C.purple} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
               <div className="text-[10px] text-muted-foreground mt-2.5">
-                * câmbio em tempo real: US$1 = R${usdBrl.toFixed(2)} · modelo: claude-sonnet-4-6 · ~{TOK_IN} tokens input + {TOK_OUT} output por conversa
+                * câmbio em tempo real: US$1 = R${usdBrl.toFixed(2)} · modelo: claude-sonnet-4-6 · prompt caching ativo
               </div>
             </SectionCard>
           </>
@@ -800,7 +821,7 @@ export default function App() {
             <div className={g(3)}>
               <Kpi label="Pendentes no total" value={totalPendentes} colorClass={totalPendentes > 0 ? 'bg-red-500' : 'bg-green-500'} icon="🔔" />
               <Kpi label="Falhas técnicas" value={totalFalhas} colorClass="bg-primary" icon="⚠️" sub="registradas automaticamente pelo n8n" />
-              <Kpi label="Verificação manual" value={totalVerificacoes} colorClass="bg-blue-500" icon="🧑‍💻" sub="alunos que não achamos por telefone/email" />
+              <Kpi label="Verificação manual" value={totalVerificacoes} colorClass="bg-sky-500" icon="🧑‍💻" sub="alunos que não achamos por telefone/email" />
             </div>
 
             <SectionCard
@@ -825,17 +846,24 @@ export default function App() {
                     <div key={r.id} className={`bg-accent border border-border rounded-lg px-3.5 py-3 ${r.status === 'resolvido' ? 'opacity-55' : ''}`}>
                       <div className="flex justify-between items-start gap-2.5 flex-wrap">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <Pill className={r.tipo === 'falha_tecnica' ? 'bg-amber-500/20 text-amber-300' : 'bg-blue-500/15 text-blue-400'}>
+                          <Pill className={r.tipo === 'falha_tecnica' ? 'bg-primary/20 text-primary' : 'bg-sky-500/15 text-sky-400'}>
                             {r.tipo === 'falha_tecnica' ? 'Falha técnica' : 'Verificação manual'}
                           </Pill>
                           {r.status === 'resolvido' && <Pill className="bg-green-500/15 text-green-400">Resolvido</Pill>}
                           <span className="text-[11px] text-muted-foreground">{r.criado_em ? new Date(r.criado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}</span>
                         </div>
-                        {r.status === 'pendente' && (
-                          <Button size="sm" variant="outline" className="h-7 text-[11px] border-green-500/40 text-green-400 hover:bg-green-500/10 hover:text-green-400" onClick={() => marcarResolvido(r.id)}>
-                            ✓ Marcar resolvido
-                          </Button>
-                        )}
+                        <div className="flex gap-1.5">
+                          {r.status === 'pendente' && !r.diagnostico && (
+                            <Button size="sm" variant="outline" className="h-7 text-[11px]" disabled={diagnosticando[r.id]} onClick={() => diagnosticar(r)}>
+                              {diagnosticando[r.id] ? 'Diagnosticando...' : '🔬 Diagnosticar'}
+                            </Button>
+                          )}
+                          {r.status === 'pendente' && (
+                            <Button size="sm" variant="outline" className="h-7 text-[11px] border-green-500/40 text-green-400 hover:bg-green-500/10 hover:text-green-400" onClick={() => marcarResolvido(r.id)}>
+                              ✓ Marcar resolvido
+                            </Button>
+                          )}
+                        </div>
                       </div>
                       <div className="mt-2 text-xs text-foreground">
                         {r.tipo === 'falha_tecnica' ? (
@@ -851,6 +879,30 @@ export default function App() {
                           </>
                         )}
                       </div>
+
+                      <DiagnosticoBox texto={r.diagnostico} />
+
+                      {r.tipo === 'verificacao_manual' && r.status === 'pendente' && (
+                        <div className="mt-3 pt-3 border-t border-border">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Cadastrar e vincular este aluno</div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                            <Input placeholder="Nome completo" className="h-8 text-xs bg-background" value={linkForms[r.id]?.nome || ''} onChange={e => updateLinkForm(r.id, 'nome', e.target.value)} />
+                            <Input placeholder="Email de compra" className="h-8 text-xs bg-background" value={linkForms[r.id]?.email || ''} onChange={e => updateLinkForm(r.id, 'email', e.target.value)} />
+                            <Input placeholder="Telefone (com DDI)" className="h-8 text-xs bg-background" value={linkForms[r.id]?.telefone ?? r.telefone ?? ''} onChange={e => updateLinkForm(r.id, 'telefone', e.target.value)} />
+                            <select
+                              className="h-8 text-xs bg-background border border-input rounded-md px-2"
+                              value={linkForms[r.id]?.produto || 'resgate'}
+                              onChange={e => updateLinkForm(r.id, 'produto', e.target.value)}
+                            >
+                              <option value="resgate">Resgate</option>
+                              <option value="ccc">CCC</option>
+                            </select>
+                          </div>
+                          <Button size="sm" className="h-7 text-[11px]" disabled={linkSalvando[r.id] || !linkForms[r.id]?.nome || !linkForms[r.id]?.email} onClick={() => vincularAluno(r)}>
+                            {linkSalvando[r.id] ? 'Salvando...' : '✓ Cadastrar e vincular'}
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
