@@ -27,6 +27,24 @@ const TOK_IN = 10963
 const TOK_OUT = 450
 const CUSTO_CONV_USD = (TOK_IN * CUSTO_INPUT) + (TOK_OUT * CUSTO_OUTPUT)
 
+// o Supabase (PostgREST) limita cada request a no máximo 1000 linhas por padrão,
+// mesmo se a gente pedir um limit maior — por isso pagina até acabar.
+async function fetchAllPages(url) {
+  const PAGE = 1000
+  let offset = 0
+  let all = []
+  while (true) {
+    const sep = url.includes('?') ? '&' : '?'
+    const r = await fetch(`${url}${sep}offset=${offset}&limit=${PAGE}`, { headers: H })
+    const page = await r.json()
+    if (!Array.isArray(page) || page.length === 0) break
+    all = all.concat(page)
+    if (page.length < PAGE) break
+    offset += PAGE
+  }
+  return all
+}
+
 async function getUSDtoBRL() {
   try {
     const r = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL')
@@ -106,7 +124,7 @@ export default function App() {
       const [rAnal, rAlunos, rConvAll, rRevisoes] = await Promise.all([
         fetch(`${SUPABASE_URL}/analises?order=criado_em.desc&limit=60`, { headers: H }).then(r => r.json()),
         fetch(`${SUPABASE_URL}/alunos?ativo=eq.true&select=id,nome,telefone,produto,criado_em`, { headers: H }).then(r => r.json()),
-        fetch(`${SUPABASE_URL}/conversas?select=aluno_id,telefone,role,mensagem,criado_em&order=criado_em.desc&limit=10000`, { headers: H }).then(r => r.json()),
+        fetchAllPages(`${SUPABASE_URL}/conversas?select=aluno_id,telefone,role,mensagem,criado_em&order=criado_em.asc`),
         fetch(`${SUPABASE_URL}/revisoes_pendentes?order=criado_em.desc&limit=300`, { headers: H }).then(r => r.json()),
       ])
 
