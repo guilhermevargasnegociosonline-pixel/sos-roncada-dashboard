@@ -322,6 +322,16 @@ export default function App() {
   const custoUSD = convPeriodo * CUSTO_CONV_USD
   const custoBRL = custoUSD * usdBrl
 
+  // saldo "ao vivo": a Anthropic não expõe saldo por API, então partimos do último
+  // valor conferido manualmente (saldo.atualizado_em) e descontamos, em tempo real,
+  // o consumo real registrado desde então — assim o número não fica parado/velho
+  // entre uma conferência manual e outra.
+  const gastosDesdeCheckpoint = saldo?.atualizado_em
+    ? todasConversas.filter(c => c.role === 'user' && new Date(c.criado_em) > new Date(saldo.atualizado_em)).length * CUSTO_CONV_USD
+    : 0
+  const saldoAoVivo = (saldo?.saldo_atual_usd ?? 0) - gastosDesdeCheckpoint
+  const custoTotalAoVivo = (saldo?.custo_total_usd ?? 0) + gastosDesdeCheckpoint
+
   // dias no período (pra gráfico diário) — limitado a 60 dias pra não pesar
   const listaDias = (() => {
     const dias = []
@@ -801,12 +811,13 @@ export default function App() {
               {!editandoSaldo ? (
                 <>
                   <div className={g(3)}>
-                    <Kpi label="Saldo atual" value={`US$ ${(saldo?.saldo_atual_usd ?? 0).toFixed(2)}`} colorClass="bg-green-500" icon="💳" />
-                    <Kpi label="Custo total desde o início" value={`US$ ${(saldo?.custo_total_usd ?? 0).toFixed(2)}`} colorClass="bg-primary" icon="📊" sub="estimativa, ver nota abaixo" />
+                    <Kpi label="Saldo estimado agora" value={`US$ ${saldoAoVivo.toFixed(2)}`} colorClass={saldoAoVivo < 2 ? 'bg-red-500' : 'bg-green-500'} icon="💳" sub={live ? 'ao vivo — atualiza sozinho' : 'descontando consumo desde o checkpoint'} />
+                    <Kpi label="Custo total desde o início" value={`US$ ${custoTotalAoVivo.toFixed(2)}`} colorClass="bg-primary" icon="📊" sub="ao vivo, a partir do checkpoint" />
                     <Kpi label="Total depositado" value={`US$ ${(saldo?.total_depositado_usd ?? 0).toFixed(2)}`} colorClass="bg-sky-500" icon="🏦" />
                   </div>
                   <div className="text-[10px] text-muted-foreground">
-                    Preenchido manualmente (a Anthropic não expõe saldo/depósitos por API) · custo total composto a partir de dois períodos com sobreposição no Console (estimativa, não exato) · última atualização: {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}
+                    Checkpoint manual (última vez que você conferiu no Console): saldo US$ {(saldo?.saldo_atual_usd ?? 0).toFixed(2)} · custo US$ {(saldo?.custo_total_usd ?? 0).toFixed(2)} · em {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}.
+                    Desde então, {gastosDesdeCheckpoint > 0 ? `estimo US$ ${gastosDesdeCheckpoint.toFixed(2)} a mais de consumo real` : 'nenhum consumo novo'} — os números acima já descontam isso automaticamente. Confira no Console de vez em quando e clique em "Atualizar" pra recalibrar.
                   </div>
                 </>
               ) : (
