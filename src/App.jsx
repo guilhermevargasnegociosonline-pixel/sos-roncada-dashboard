@@ -802,11 +802,11 @@ export default function App() {
                 <>
                   <div className={g(3)}>
                     <Kpi label="Saldo atual" value={`US$ ${(saldo?.saldo_atual_usd ?? 0).toFixed(2)}`} colorClass="bg-green-500" icon="💳" />
-                    <Kpi label="Custo total desde o início" value={`US$ ${(saldo?.custo_total_usd ?? 0).toFixed(2)}`} colorClass="bg-primary" icon="📊" />
+                    <Kpi label="Custo total desde o início" value={`US$ ${(saldo?.custo_total_usd ?? 0).toFixed(2)}`} colorClass="bg-primary" icon="📊" sub="estimativa, ver nota abaixo" />
                     <Kpi label="Total depositado" value={`US$ ${(saldo?.total_depositado_usd ?? 0).toFixed(2)}`} colorClass="bg-sky-500" icon="🏦" />
                   </div>
                   <div className="text-[10px] text-muted-foreground">
-                    Preenchido manualmente (a Anthropic não expõe saldo/depósitos por API) · última atualização: {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}
+                    Preenchido manualmente (a Anthropic não expõe saldo/depósitos por API) · custo total composto a partir de dois períodos com sobreposição no Console (estimativa, não exato) · última atualização: {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}
                   </div>
                 </>
               ) : (
