@@ -108,6 +108,8 @@ export default function App() {
   const [diaSel, setDiaSel] = useState(null)
   const [alunosAtivos, setAlunosAtivos] = useState([])
   const [convPorAluno, setConvPorAluno] = useState({})
+  const [revisoes, setRevisoes] = useState([])
+  const [revisaoFiltro, setRevisaoFiltro] = useState('pendente')
 
   useEffect(() => {
     async function load() {
@@ -115,11 +117,13 @@ export default function App() {
         const cambio = await getUSDtoBRL()
         setUsdBrl(cambio)
 
-        const [rAnal, rAlunos, rConvAll] = await Promise.all([
+        const [rAnal, rAlunos, rConvAll, rRevisoes] = await Promise.all([
           fetch(`${SUPABASE_URL}/analises?order=criado_em.desc&limit=60`, {headers:H}).then(r=>r.json()),
           fetch(`${SUPABASE_URL}/alunos?ativo=eq.true&select=id,nome,telefone,produto,criado_em`, {headers:H}).then(r=>r.json()),
           fetch(`${SUPABASE_URL}/conversas?select=aluno_id,telefone,role,mensagem,criado_em&order=criado_em.desc&limit=10000`, {headers:H}).then(r=>r.json()),
+          fetch(`${SUPABASE_URL}/revisoes_pendentes?order=criado_em.desc&limit=300`, {headers:H}).then(r=>r.json()),
         ])
+        setRevisoes(rRevisoes || [])
 
         const analises = (rAnal||[]).filter(r=>(r.total_ativos||0)>0)
         if (analises.length>0) { setAllAnalises(analises); setData(analises[0]); setPeriodoSel(analises[0].semana||'') }
@@ -308,7 +312,23 @@ export default function App() {
     {id:'copy',      label:mobile?'💬':'💬 Copy'},
     {id:'churn',     label:mobile?'⚠️':'⚠️ Risco'},
     {id:'custo',     label:mobile?'💵':'💵 Custo'},
+    {id:'inspecao',  label:mobile?'🔎':`🔎 Inspeção${revisoes.filter(r=>r.status==='pendente').length>0?` (${revisoes.filter(r=>r.status==='pendente').length})`:''}`},
   ]
+
+  async function marcarResolvido(id){
+    setRevisoes(prev=>prev.map(r=>r.id===id?{...r,status:'resolvido'}:r))
+    try{
+      await fetch(`${SUPABASE_URL}/revisoes_pendentes?id=eq.${id}`,{
+        method:'PATCH', headers:{...H,'Content-Type':'application/json','Prefer':'return=minimal'},
+        body: JSON.stringify({status:'resolvido', resolvido_em:new Date().toISOString()})
+      })
+    }catch(e){ console.error(e) }
+  }
+
+  const revisoesVisiveis = revisoes.filter(r=>revisaoFiltro==='todas' ? true : r.status===revisaoFiltro)
+  const totalPendentes = revisoes.filter(r=>r.status==='pendente').length
+  const totalFalhas = revisoes.filter(r=>r.tipo==='falha_tecnica' && r.status==='pendente').length
+  const totalVerificacoes = revisoes.filter(r=>r.tipo==='verificacao_manual' && r.status==='pendente').length
 
   const fantResgate = fantasmas.filter(a=>a.produto==='resgate')
   const fantCCC     = fantasmas.filter(a=>a.produto==='ccc')
@@ -903,6 +923,74 @@ export default function App() {
               <div style={{fontSize:10,color:T.t3,marginTop:10}}>
                 * câmbio em tempo real: US$1 = R${usdBrl.toFixed(2)} · modelo: claude-sonnet-4-6 · ~{TOK_IN} tokens input + {TOK_OUT} output por conversa
               </div>
+            </Card>
+          </>
+        )}
+
+        {/* ════ INSPEÇÃO ════ */}
+        {mainTab==='inspecao' && (
+          <>
+            <STitle icon="🔎" title="Inspeção" sub="Falhas técnicas e alunos aguardando verificação manual — tudo que precisa da sua atenção"/>
+            <div style={g(3)}>
+              <KPI label="Pendentes no total" value={totalPendentes} color={totalPendentes>0?T.red:T.green} icon="🔔"/>
+              <KPI label="Falhas técnicas" value={totalFalhas} color={T.amber} icon="⚠️" sub="registradas automaticamente pelo n8n"/>
+              <KPI label="Verificação manual" value={totalVerificacoes} color={T.blue} icon="🧑‍💻" sub="alunos que não achamos por telefone/email"/>
+            </div>
+
+            <Card>
+              <CTitle right={
+                <div style={{display:'flex',gap:6}}>
+                  {[['pendente','Pendentes'],['resolvido','Resolvidos'],['todas','Todas']].map(([id,label])=>(
+                    <button key={id} onClick={()=>setRevisaoFiltro(id)} style={{
+                      padding:'4px 10px',fontSize:11,borderRadius:6,cursor:'pointer',
+                      background:revisaoFiltro===id?T.amber:T.elevated,
+                      color:revisaoFiltro===id?'#000':T.t2,
+                      border:`1px solid ${revisaoFiltro===id?T.amber:T.border}`,
+                      fontWeight:revisaoFiltro===id?700:400,
+                    }}>{label}</button>
+                  ))}
+                </div>
+              }>Log de eventos</CTitle>
+
+              {revisoesVisiveis.length===0 ? <Empty msg="Nada por aqui — tudo em dia"/> : (
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  {revisoesVisiveis.map(r=>(
+                    <div key={r.id} style={{
+                      background:T.elevated,border:`1px solid ${T.border}`,borderRadius:10,padding:'12px 14px',
+                      opacity:r.status==='resolvido'?0.55:1,
+                    }}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10,flexWrap:'wrap'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                          <Badge color={r.tipo==='falha_tecnica'?T.amber:T.blue}>
+                            {r.tipo==='falha_tecnica'?'Falha técnica':'Verificação manual'}
+                          </Badge>
+                          {r.status==='resolvido' && <Badge color={T.green}>Resolvido</Badge>}
+                          <span style={{fontSize:11,color:T.t3}}>{r.criado_em ? new Date(r.criado_em).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}) : '—'}</span>
+                        </div>
+                        {r.status==='pendente' && (
+                          <button onClick={()=>marcarResolvido(r.id)} style={{background:T.greenD,border:`1px solid ${T.green}`,borderRadius:6,color:T.green,padding:'4px 10px',fontSize:11,cursor:'pointer'}}>
+                            ✓ Marcar resolvido
+                          </button>
+                        )}
+                      </div>
+                      <div style={{marginTop:8,fontSize:12,color:T.t1}}>
+                        {r.tipo==='falha_tecnica' ? (
+                          <>
+                            <div><strong style={{color:T.t2}}>Workflow:</strong> {r.workflow||'—'} · <strong style={{color:T.t2}}>Node:</strong> {r.node||'—'}</div>
+                            <div style={{marginTop:4,color:T.t2}}>{r.detalhe||'—'}</div>
+                            {r.execution_id && <div style={{marginTop:4,fontSize:10,color:T.t3}}>Execução: {r.execution_id}</div>}
+                          </>
+                        ) : (
+                          <>
+                            <div><strong style={{color:T.t2}}>Telefone:</strong> {r.telefone||'—'}{r.nome?` · ${r.nome}`:''}{r.email?` · ${r.email}`:''}</div>
+                            <div style={{marginTop:4,color:T.t2}}>"{r.detalhe||'—'}"</div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Card>
           </>
         )}
