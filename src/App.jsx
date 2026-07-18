@@ -112,6 +112,10 @@ export default function App() {
   const [linkForms, setLinkForms] = useState({})
   const [linkSalvando, setLinkSalvando] = useState({})
   const [live, setLive] = useState(false)
+  const [saldo, setSaldo] = useState(null)
+  const [editandoSaldo, setEditandoSaldo] = useState(false)
+  const [saldoForm, setSaldoForm] = useState({})
+  const [salvandoSaldo, setSalvandoSaldo] = useState(false)
   const reloadTimer = useRef(null)
 
   const data = allAnalises[0] || null // última análise qualitativa (crise/dores/módulos) — sempre a mais recente
@@ -121,12 +125,14 @@ export default function App() {
       const cambio = await getUSDtoBRL()
       setUsdBrl(cambio)
 
-      const [rAnal, rAlunos, rConvAll, rRevisoes] = await Promise.all([
+      const [rAnal, rAlunos, rConvAll, rRevisoes, rSaldo] = await Promise.all([
         fetch(`${SUPABASE_URL}/analises?order=criado_em.desc&limit=60`, { headers: H }).then(r => r.json()),
         fetch(`${SUPABASE_URL}/alunos?ativo=eq.true&select=id,nome,telefone,produto,criado_em`, { headers: H }).then(r => r.json()),
         fetchAllPages(`${SUPABASE_URL}/conversas?select=aluno_id,telefone,role,mensagem,criado_em&order=criado_em.asc`),
         fetch(`${SUPABASE_URL}/revisoes_pendentes?order=criado_em.desc&limit=300`, { headers: H }).then(r => r.json()),
+        fetch(`${SUPABASE_URL}/saldo_claude?id=eq.1`, { headers: H }).then(r => r.json()),
       ])
+      setSaldo((rSaldo || [])[0] || null)
 
       const analises = (rAnal || []).filter(r => (r.total_ativos || 0) > 0)
       setAllAnalises(analises)
@@ -246,6 +252,34 @@ export default function App() {
       await marcarResolvido(r.id)
     } catch (e) { console.error(e) }
     finally { setLinkSalvando(prev => ({ ...prev, [r.id]: false })) }
+  }
+
+  function abrirEdicaoSaldo() {
+    setSaldoForm({
+      saldo_atual_usd: saldo?.saldo_atual_usd ?? 0,
+      custo_total_usd: saldo?.custo_total_usd ?? 0,
+      total_depositado_usd: saldo?.total_depositado_usd ?? 0,
+    })
+    setEditandoSaldo(true)
+  }
+
+  async function salvarSaldo() {
+    setSalvandoSaldo(true)
+    try {
+      const body = {
+        saldo_atual_usd: parseFloat(saldoForm.saldo_atual_usd) || 0,
+        custo_total_usd: parseFloat(saldoForm.custo_total_usd) || 0,
+        total_depositado_usd: parseFloat(saldoForm.total_depositado_usd) || 0,
+        atualizado_em: new Date().toISOString(),
+      }
+      await fetch(`${SUPABASE_URL}/saldo_claude?id=eq.1`, {
+        method: 'PATCH', headers: { ...H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify(body)
+      })
+      setSaldo(prev => ({ ...prev, ...body }))
+      setEditandoSaldo(false)
+    } catch (e) { console.error(e) }
+    finally { setSalvandoSaldo(false) }
   }
 
   if (loading) return (
@@ -758,8 +792,49 @@ export default function App() {
         {mainTab === 'custo' && (
           <>
             <SectionTitle icon="💵" title="Custo do clone" sub={`claude-sonnet-4-6 · $3/MTok input + $15/MTok output · câmbio US$1 = R$${usdBrl.toFixed(2)} (tempo real)`} />
+
+            <SectionCard
+              className="mb-3.5"
+              title="Conta na Anthropic (Claude Console)"
+              right={!editandoSaldo && <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={abrirEdicaoSaldo}>✎ Atualizar</Button>}
+            >
+              {!editandoSaldo ? (
+                <>
+                  <div className={g(3)}>
+                    <Kpi label="Saldo atual" value={`US$ ${(saldo?.saldo_atual_usd ?? 0).toFixed(2)}`} colorClass="bg-green-500" icon="💳" />
+                    <Kpi label="Custo total desde o início" value={`US$ ${(saldo?.custo_total_usd ?? 0).toFixed(2)}`} colorClass="bg-primary" icon="📊" />
+                    <Kpi label="Total depositado" value={`US$ ${(saldo?.total_depositado_usd ?? 0).toFixed(2)}`} colorClass="bg-sky-500" icon="🏦" />
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    Preenchido manualmente (a Anthropic não expõe saldo/depósitos por API) · última atualização: {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-3">
+                    <div>
+                      <div className="text-[10px] text-muted-foreground mb-1">Saldo atual (US$)</div>
+                      <Input type="number" step="0.01" className="h-8 text-xs bg-background" value={saldoForm.saldo_atual_usd} onChange={e => setSaldoForm(f => ({ ...f, saldo_atual_usd: e.target.value }))} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-muted-foreground mb-1">Custo total desde o início (US$)</div>
+                      <Input type="number" step="0.01" className="h-8 text-xs bg-background" value={saldoForm.custo_total_usd} onChange={e => setSaldoForm(f => ({ ...f, custo_total_usd: e.target.value }))} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-muted-foreground mb-1">Total depositado (US$)</div>
+                      <Input type="number" step="0.01" className="h-8 text-xs bg-background" value={saldoForm.total_depositado_usd} onChange={e => setSaldoForm(f => ({ ...f, total_depositado_usd: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" className="h-7 text-[11px]" disabled={salvandoSaldo} onClick={salvarSaldo}>{salvandoSaldo ? 'Salvando...' : '✓ Salvar'}</Button>
+                    <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setEditandoSaldo(false)}>Cancelar</Button>
+                  </div>
+                </div>
+              )}
+            </SectionCard>
+
             <div className="bg-green-500/10 border border-green-500/20 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground">
-              ✅ <strong className="text-green-500">Custo real — {rotuloPeriodo}:</strong> US$ {custoUSD.toFixed(2)} · R$ {custoBRL.toFixed(2)} · {convPeriodo} conversas · {alunosUnicosPeriodo} alunos únicos
+              ✅ <strong className="text-green-500">Custo estimado — {rotuloPeriodo}:</strong> US$ {custoUSD.toFixed(2)} · R$ {custoBRL.toFixed(2)} · {convPeriodo} conversas · {alunosUnicosPeriodo} alunos únicos
             </div>
             <div className={g(3)}>
               <Kpi
