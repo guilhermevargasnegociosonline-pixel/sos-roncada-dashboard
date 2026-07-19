@@ -21,7 +21,7 @@ import {
 } from '@/components/dashboard/dashboard-ui'
 import { SidebarToggle, Sidebar } from '@/components/dashboard/sidebar'
 import { C } from '@/lib/chart-colors'
-import { supabase, DIAGNOSTICAR_WEBHOOK } from '@/lib/supabase'
+import { supabase, DIAGNOSTICAR_WEBHOOK, NOTIFICAR_LIBERADO_WEBHOOK } from '@/lib/supabase'
 
 const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJua2Vzc2h6c3RyeXpmb2lwcmVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5ODY1NjcsImV4cCI6MjA5NTU2MjU2N30.2XodPoFyEaUSLD7fW2HXzl0qJC6ohdKFIHLdgFrZzKI'
@@ -258,10 +258,15 @@ export default function App() {
     setLinkSalvando(prev => ({ ...prev, [r.id]: true }))
     try {
       const telefone = (form.telefone || r.telefone || '').trim()
+      const telefoneComDDI = telefone.startsWith('+') ? telefone : `+${telefone}`
       await fetch(`${SUPABASE_URL}/alunos`, {
         method: 'POST', headers: { ...H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ nome: form.nome, email: form.email, telefone: telefone.startsWith('+') ? telefone : `+${telefone}`, produto: form.produto || 'resgate', ativo: true })
+        body: JSON.stringify({ nome: form.nome, email: form.email, telefone: telefoneComDDI, produto: form.produto || 'resgate', ativo: true })
       })
+      fetch(NOTIFICAR_LIBERADO_WEBHOOK, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ telefone: telefoneComDDI, nome: form.nome })
+      }).catch(() => {})
       await marcarResolvido(r.id)
     } catch (e) { console.error(e) }
     finally { setLinkSalvando(prev => ({ ...prev, [r.id]: false })) }

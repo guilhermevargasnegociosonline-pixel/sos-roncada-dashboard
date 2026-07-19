@@ -6,3 +6,4 @@ export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiO
 export const supabase = createClient(SUPABASE_URL_BASE, SUPABASE_ANON_KEY)
 
 export const DIAGNOSTICAR_WEBHOOK = 'https://webhook.pedroroncada.com.br/webhook/diagnosticar-falha'
+export const NOTIFICAR_LIBERADO_WEBHOOK = 'https://n8n.pedroroncada.com.br/webhook/notificar-liberado'
