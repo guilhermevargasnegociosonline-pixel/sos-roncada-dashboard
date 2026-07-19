@@ -4,6 +4,13 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, AreaChart, Area, Cell
 } from 'recharts'
+import {
+  LayoutDashboard, LifeBuoy, HeartHandshake, Activity, MessageSquareQuote,
+  AlertTriangle, Wallet, Search, Users, MessageSquare, UserX, Scale,
+  TrendingUp, Users2, BellOff, TrendingDown, CreditCard, BarChart3,
+  Landmark, CalendarDays, CalendarRange, Bell, UserSearch, Pencil,
+  FlaskConical, Check, PartyPopper,
+} from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,6 +19,7 @@ import {
   Kpi, SectionCard, SectionTitle, ProgressRow, Pill, ProductBadge,
   EmptyState, CopyPhoneButton, DataTable, DiagnosticoBox, tooltipStyle,
 } from '@/components/dashboard/dashboard-ui'
+import { SidebarToggle, Sidebar } from '@/components/dashboard/sidebar'
 import { C } from '@/lib/chart-colors'
 import { supabase, DIAGNOSTICAR_WEBHOOK } from '@/lib/supabase'
 
@@ -19,13 +27,17 @@ const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJua2Vzc2h6c3RyeXpmb2lwcmVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5ODY1NjcsImV4cCI6MjA5NTU2MjU2N30.2XodPoFyEaUSLD7fW2HXzl0qJC6ohdKFIHLdgFrZzKI'
 const H = { 'Authorization': `Bearer ${SUPABASE_KEY}`, 'apikey': SUPABASE_KEY }
 
-// Custo claude-sonnet-4-6 — $3/MTok input + $15/MTok output
-// Calibrado com dados reais medidos em produção (com cache ativo): ~US$0,012/msg em uso concorrente
-const CUSTO_INPUT = 3 / 1_000_000
-const CUSTO_OUTPUT = 15 / 1_000_000
-const TOK_IN = 10963
-const TOK_OUT = 450
+// Provedor ativo desde 2026-07-19: Gemini 3.5 Flash (migração emergencial, conta Anthropic sem crédito)
+// Preço oficial Gemini 3.5 Flash — $1.50/MTok input + $9.00/MTok output (raciocínio incluso na saída)
+// Calibrado com dados reais medidos em chamada de teste direta à API nesta sessão
+const CUSTO_INPUT = 1.5 / 1_000_000
+const CUSTO_OUTPUT = 9 / 1_000_000
+const TOK_IN = 7700
+const TOK_OUT = 500
 const CUSTO_CONV_USD = (TOK_IN * CUSTO_INPUT) + (TOK_OUT * CUSTO_OUTPUT)
+// A chave em uso está na camada gratuita do Gemini (sem cobrança até estourar a cota diária) —
+// os valores acima são a estimativa de custo SE o billing pago for ativado, não uma cobrança real hoje.
+const GEMINI_FREE_TIER = true
 
 // o Supabase (PostgREST) limita cada request a no máximo 1000 linhas por padrão,
 // mesmo se a gente pedir um limit maior — por isso pagina até acabar.
@@ -78,14 +90,14 @@ function hojeBrasiliaStr() {
 }
 
 const mainTabsDef = [
-  { id: 'geral', icon: '📊', label: 'Geral' },
-  { id: 'resgate', icon: '🔵', label: 'Resgate' },
-  { id: 'ccc', icon: '🟣', label: 'CCC' },
-  { id: 'comercial', icon: '🚀', label: 'Operação' },
-  { id: 'copy', icon: '💬', label: 'Copy' },
-  { id: 'churn', icon: '⚠️', label: 'Risco' },
-  { id: 'custo', icon: '💵', label: 'Custo' },
-  { id: 'inspecao', icon: '🔎', label: 'Inspeção' },
+  { id: 'geral', icon: LayoutDashboard, label: 'Geral' },
+  { id: 'resgate', icon: LifeBuoy, label: 'Resgate' },
+  { id: 'ccc', icon: HeartHandshake, label: 'CCC' },
+  { id: 'comercial', icon: Activity, label: 'Operação' },
+  { id: 'copy', icon: MessageSquareQuote, label: 'Copy' },
+  { id: 'churn', icon: AlertTriangle, label: 'Risco' },
+  { id: 'custo', icon: Wallet, label: 'Custo' },
+  { id: 'inspecao', icon: Search, label: 'Inspeção' },
 ]
 
 export default function App() {
@@ -116,6 +128,7 @@ export default function App() {
   const [editandoSaldo, setEditandoSaldo] = useState(false)
   const [saldoForm, setSaldoForm] = useState({})
   const [salvandoSaldo, setSalvandoSaldo] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const reloadTimer = useRef(null)
 
   const data = allAnalises[0] || null // última análise qualitativa (crise/dores/módulos) — sempre a mais recente
@@ -397,19 +410,32 @@ export default function App() {
 
   const rotuloPeriodo = periodoModo === 'hoje' ? 'hoje' : periodoModo === '7dias' ? 'últimos 7 dias' : `${rIni} a ${rFim}`
 
+  const tabAtualLabel = mainTabsDef.find(t => t.id === mainTab)?.label || ''
+
   return (
     <div className="min-h-screen bg-background">
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        tabs={mainTabsDef}
+        activeTab={mainTab}
+        onSelect={setMainTab}
+        pendentesCount={totalPendentes}
+      />
       <div className="max-w-[1080px] mx-auto px-3.5 py-5 md:px-7 md:py-8">
 
         {/* HEADER */}
         <div className="flex justify-between items-start mb-5 flex-wrap gap-3.5">
-          <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <div className={`w-[7px] h-[7px] rounded-full ${live ? 'bg-green-500 shadow-[0_0_8px_#22c55e]' : 'bg-muted-foreground'}`} />
-              <div className="text-lg md:text-[22px] font-bold tracking-tight text-foreground">S.O.S Roncada</div>
-              {live && <Pill className="bg-green-500/15 text-green-400">ao vivo</Pill>}
+          <div className="flex items-center gap-3">
+            <SidebarToggle onClick={() => setSidebarOpen(true)} />
+            <div>
+              <div className="flex items-center gap-2 mb-0.5">
+                <div className={`w-[7px] h-[7px] rounded-full ${live ? 'bg-green-500 shadow-[0_0_8px_#22c55e]' : 'bg-muted-foreground'}`} />
+                <div className="text-lg md:text-[22px] font-bold tracking-tight text-foreground">S.O.S Roncada</div>
+                {live && <Pill className="bg-green-500/15 text-green-400">ao vivo</Pill>}
+              </div>
+              <div className="text-[11px] text-muted-foreground pl-[15px]">{tabAtualLabel} · dados de volume/custo em tempo real</div>
             </div>
-            <div className="text-[11px] text-muted-foreground pl-[15px]">Central de inteligência · dados de volume/custo em tempo real</div>
           </div>
         </div>
 
@@ -436,33 +462,19 @@ export default function App() {
           <span className="text-[11px] text-muted-foreground">período: {rotuloPeriodo}</span>
         </div>
 
-        {/* TABS */}
-        <Tabs value={mainTab} onValueChange={setMainTab} className="mb-5">
-          <TabsList className="w-full justify-start overflow-x-auto h-auto bg-transparent border-b border-border rounded-none p-0 gap-1">
-            {mainTabsDef.map(t => (
-              <TabsTrigger
-                key={t.id}
-                value={t.id}
-                className="data-active:border-primary data-active:shadow-none rounded-none border-b-2 border-transparent px-3 py-2 text-xs data-active:bg-transparent data-active:text-foreground text-muted-foreground"
-              >
-                {mobile ? t.icon : `${t.icon} ${t.label}${t.id === 'inspecao' && totalPendentes > 0 ? ` (${totalPendentes})` : ''}`}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
 
         {/* ════ GERAL ════ */}
         {mainTab === 'geral' && (
           <>
             <div className={g(4)}>
-              <Kpi label="Alunos ativos (real)" value={alunosAtivos.length} colorClass="bg-primary" icon="👥" sub={`de ${alunos.length} cadastrados`} />
-              <Kpi label={`Conversas — ${rotuloPeriodo}`} value={convPeriodo} colorClass="bg-sky-500" icon="💬" sub={`${alunosUnicosPeriodo} alunos únicos`} />
-              <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon="😶" />
+              <Kpi label="Alunos ativos (real)" value={alunosAtivos.length} colorClass="bg-primary" icon={<Users className="w-5 h-5" />} sub={`de ${alunos.length} cadastrados`} />
+              <Kpi label={`Conversas — ${rotuloPeriodo}`} value={convPeriodo} colorClass="bg-sky-500" icon={<MessageSquare className="w-5 h-5" />} sub={`${alunosUnicosPeriodo} alunos únicos`} />
+              <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon={<UserX className="w-5 h-5" />} />
               <Kpi
                 label={`Custo — ${rotuloPeriodo}`}
                 value={`US$ ${custoUSD.toFixed(2)}`}
                 colorClass="bg-muted-foreground"
-                icon="💵"
+                icon={<Wallet className="w-5 h-5" />}
                 sub={`R$ ${custoBRL.toFixed(2)} · câmbio ${usdBrl.toFixed(2)}`}
               />
             </div>
@@ -502,7 +514,7 @@ export default function App() {
             <SectionCard
               className="mb-4"
               title={<>Mensagens por dia {diaSel && <span className="text-primary font-semibold">· {diaSel}</span>}</>}
-              right={diaSel && <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setDiaSel(null)}>✕ Limpar</Button>}
+              right={diaSel && <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setDiaSel(null)}>Limpar</Button>}
             >
               <ResponsiveContainer width="100%" height={140}>
                 <BarChart data={convDiarias} barSize={mobile ? 14 : 20} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}
@@ -518,7 +530,7 @@ export default function App() {
               </ResponsiveContainer>
               {diaSel && (
                 <div className="mt-3 px-3.5 py-2.5 bg-accent rounded-lg text-xs text-muted-foreground">
-                  📅 <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens · {convDiarias.find(d => d.data === diaSel)?.unicos || 0} alunos únicos
+                  <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens · {convDiarias.find(d => d.data === diaSel)?.unicos || 0} alunos únicos
                   <span className="ml-3">· Custo estimado: US$ {((convDiarias.find(d => d.data === diaSel)?.total || 0) * CUSTO_CONV_USD).toFixed(3)}</span>
                 </div>
               )}
@@ -552,11 +564,11 @@ export default function App() {
         {/* ════ RESGATE ════ */}
         {mainTab === 'resgate' && (
           <>
-            <SectionTitle icon="🔵" title="Resgate — Método Completo" sub="7 módulos · programa integral de restauração conjugal" />
+            <SectionTitle icon={<LifeBuoy />} title="Resgate — Método Completo" sub="7 módulos · programa integral de restauração conjugal" />
             <div className={g(3)}>
-              <Kpi label="Em crise" value={data?.resgate_crise || 0} colorClass="bg-red-500" icon="🆘" />
-              <Kpi label="Estáveis" value={data?.resgate_estaveis || 0} colorClass="bg-primary" icon="⚖️" />
-              <Kpi label="Em progresso" value={data?.resgate_progresso || 0} colorClass="bg-green-500" icon="📈" sub="avançando no método" />
+              <Kpi label="Em crise" value={data?.resgate_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} />
+              <Kpi label="Estáveis" value={data?.resgate_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} />
+              <Kpi label="Em progresso" value={data?.resgate_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} sub="avançando no método" />
             </div>
             <div className={g(2)}>
               <SectionCard title="Estado emocional — Resgate">
@@ -584,7 +596,7 @@ export default function App() {
             </div>
             <SectionCard title="Módulos mencionados nas conversas">
               <div className="bg-accent rounded-lg px-3.5 py-2.5 mb-3.5 text-[11px] text-muted-foreground">
-                💡 <strong className="text-foreground">Como interpretar:</strong> o clone identifica qual módulo é mais relevante para a dúvida do aluno e o menciona na resposta. Alta frequência de um módulo = muitos alunos com dúvidas daquele tema específico.
+                <strong className="text-foreground">Como interpretar:</strong> o clone identifica qual módulo é mais relevante para a dúvida do aluno e o menciona na resposta. Alta frequência de um módulo = muitos alunos com dúvidas daquele tema específico.
               </div>
               {topModulos.length > 0
                 ? [...topModulos].sort((a, b) => b.percentual - a.percentual).map((m, i) => (
@@ -600,11 +612,11 @@ export default function App() {
         {/* ════ CCC ════ */}
         {mainTab === 'ccc' && (
           <>
-            <SectionTitle icon="🟣" title="Como Convencer seu Cônjuge" sub="4 módulos · produto de entrada · porta para o Resgate" />
+            <SectionTitle icon={<HeartHandshake />} title="Como Convencer seu Cônjuge" sub="4 módulos · produto de entrada · porta para o Resgate" />
             <div className={g(3)}>
-              <Kpi label="Em crise" value={data?.ccc_crise || 0} colorClass="bg-red-500" icon="🆘" />
-              <Kpi label="Estáveis" value={data?.ccc_estaveis || 0} colorClass="bg-primary" icon="⚖️" />
-              <Kpi label="Em progresso" value={data?.ccc_progresso || 0} colorClass="bg-green-500" icon="📈" />
+              <Kpi label="Em crise" value={data?.ccc_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} />
+              <Kpi label="Estáveis" value={data?.ccc_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} />
+              <Kpi label="Em progresso" value={data?.ccc_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} />
             </div>
             <div className={g(2)}>
               <SectionCard title="Estado emocional — CCC">
@@ -626,7 +638,7 @@ export default function App() {
                   </ResponsiveContainer>
                 ) : <EmptyState msg="Aguardando primeiros alunos CCC conversarem" />}
               </SectionCard>
-              <SectionCard title="🔑 Sinais de upgrade para o Resgate">
+              <SectionCard title="Sinais de upgrade para o Resgate">
                 <div className="text-[11px] text-muted-foreground mb-3">Alunos CCC que mencionaram temas do programa completo</div>
                 <div className="bg-accent rounded-lg px-3.5 py-3 mb-2.5">
                   <div className="flex justify-between items-center">
@@ -655,15 +667,15 @@ export default function App() {
         {/* ════ OPERAÇÃO ════ */}
         {mainTab === 'comercial' && (
           <>
-            <SectionTitle icon="🚀" title="Central de operação" sub="Engajamento, alunos ativos e reengajamento" />
+            <SectionTitle icon={<Activity />} title="Central de operação" sub="Engajamento, alunos ativos e reengajamento" />
 
             <div className={g(3)}>
-              <Kpi label="Alunos ativos (conversaram)" value={alunosAtivos.length} colorClass="bg-primary" icon="👥" sub={`de ${alunos.length} cadastrados no total`} />
-              <Kpi label={`Alunos únicos — ${rotuloPeriodo}`} value={alunosUnicosPeriodo} colorClass="bg-sky-500" icon="🗣️" />
-              <Kpi label={`Mensagens — ${rotuloPeriodo}`} value={convPeriodo} colorClass="bg-purple-400" icon="💬" />
+              <Kpi label="Alunos ativos (conversaram)" value={alunosAtivos.length} colorClass="bg-primary" icon={<Users className="w-5 h-5" />} sub={`de ${alunos.length} cadastrados no total`} />
+              <Kpi label={`Alunos únicos — ${rotuloPeriodo}`} value={alunosUnicosPeriodo} colorClass="bg-sky-500" icon={<Users2 className="w-5 h-5" />} />
+              <Kpi label={`Mensagens — ${rotuloPeriodo}`} value={convPeriodo} colorClass="bg-purple-400" icon={<MessageSquare className="w-5 h-5" />} />
             </div>
 
-            <SectionCard className="mb-4" title="📅 Alunos únicos por dia — engajamento real">
+            <SectionCard className="mb-4" title="Alunos únicos por dia — engajamento real">
               <ResponsiveContainer width="100%" height={150}>
                 <BarChart data={convDiarias} barSize={mobile ? 12 : 18} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}
                   onClick={e => e?.activePayload && setDiaSel(e.activePayload[0]?.payload?.data)}>
@@ -678,12 +690,12 @@ export default function App() {
               </ResponsiveContainer>
               {diaSel && (
                 <div className="mt-2.5 px-3 py-2 bg-accent rounded-lg text-xs text-muted-foreground">
-                  📅 <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.unicos || 0} alunos únicos · {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens
+                  <strong className="text-foreground">{diaSel}</strong> — {convDiarias.find(d => d.data === diaSel)?.unicos || 0} alunos únicos · {convDiarias.find(d => d.data === diaSel)?.total || 0} mensagens
                 </div>
               )}
             </SectionCard>
 
-            <SectionCard className="mb-4" title="🏆 Alunos mais ativos — total de mensagens" right={<Pill className="bg-primary/15 text-primary">{rankingAtivos.length} alunos</Pill>}>
+            <SectionCard className="mb-4" title="Alunos mais ativos — total de mensagens" right={<Pill className="bg-primary/15 text-primary">{rankingAtivos.length} alunos</Pill>}>
               {rankingAtivos.length > 0 ? (
                 <DataTable headers={['#', 'Nome', 'Produto', 'Mensagens', 'Telefone']}>
                   {rankingAtivos.map((a, i) => (
@@ -706,7 +718,7 @@ export default function App() {
               ) : <EmptyState />}
             </SectionCard>
 
-            <SectionCard title="🔁 Reengajamento — inativos para contato" right={<Pill className="bg-red-500/15 text-red-400">{data?.total_inativos || 0} inativos</Pill>}>
+            <SectionCard title="Reengajamento — inativos para contato" right={<Pill className="bg-red-500/15 text-red-400">{data?.total_inativos || 0} inativos</Pill>}>
               <div className="text-[11px] text-muted-foreground mb-3">Alunos que podem precisar de uma mensagem manual do Pedro</div>
               {fantasmas.length > 0 || (data?.total_inativos || 0) > 0 ? (
                 <DataTable headers={['Nome', 'Produto', 'Telefone', 'Status', 'Ação']}>
@@ -726,7 +738,7 @@ export default function App() {
                     )
                   })}
                 </DataTable>
-              ) : <EmptyState msg="🎉 Todos os alunos estão engajados" />}
+              ) : <EmptyState msg="Todos os alunos estão engajados" />}
             </SectionCard>
           </>
         )}
@@ -734,11 +746,11 @@ export default function App() {
         {/* ════ COPY ════ */}
         {mainTab === 'copy' && (
           <>
-            <SectionTitle icon="💬" title="Painel de copy" sub="Frases reais dos alunos — ouro para comunicação, conteúdo e vendas" />
+            <SectionTitle icon={<MessageSquareQuote />} title="Painel de copy" sub="Frases reais dos alunos — ouro para comunicação, conteúdo e vendas" />
             <Tabs value={copyTab} onValueChange={setCopyTab} className="mb-4">
               <TabsList>
-                <TabsTrigger value="semana" className="text-xs">📅 Esta semana</TabsTrigger>
-                <TabsTrigger value="mes" className="text-xs">🗓️ Este mês</TabsTrigger>
+                <TabsTrigger value="semana" className="text-xs">Esta semana</TabsTrigger>
+                <TabsTrigger value="mes" className="text-xs">Este mês</TabsTrigger>
               </TabsList>
             </Tabs>
             <SectionCard title={copyTab === 'semana' ? 'Ranking semanal — por citações' : 'Ranking mensal — por citações'} right={<Pill className="bg-primary/15 text-primary">{frasesCopy[copyTab].length} frases</Pill>}>
@@ -762,22 +774,22 @@ export default function App() {
         {/* ════ RISCO ════ */}
         {mainTab === 'churn' && (
           <>
-            <SectionTitle icon="⚠️" title="Risco de churn" sub="Alunos que precisam de atenção imediata" />
+            <SectionTitle icon={<AlertTriangle />} title="Risco de churn" sub="Alunos que precisam de atenção imediata" />
             <div className={g(3)}>
-              <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon="🔕" />
-              <Kpi label="Em crise ativa" value={data?.total_crise || 0} colorClass="bg-red-500" icon="🆘" sub="mencionaram crise emocional" />
-              <Kpi label="Sem progresso +7d" value={alunosSemProgresso.length} colorClass="bg-primary" icon="📉" sub="ativos há +7 dias" />
+              <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon={<BellOff className="w-5 h-5" />} />
+              <Kpi label="Em crise ativa" value={data?.total_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="mencionaram crise emocional" />
+              <Kpi label="Sem progresso +7d" value={alunosSemProgresso.length} colorClass="bg-primary" icon={<TrendingDown className="w-5 h-5" />} sub="ativos há +7 dias" />
             </div>
             {(data?.total_crise || 0) > 0 && (
               <div className="bg-red-950/40 border border-red-500/30 rounded-xl px-4.5 py-3.5 mb-4 flex items-center gap-3">
-                <span className="text-xl">🆘</span>
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
                 <div>
                   <div className="text-[13px] font-semibold text-red-400">Alunos em crise emocional detectada</div>
                   <div className="text-xs text-muted-foreground mt-0.5">{data?.total_crise} aluno(s) mencionaram palavras de crise nas conversas desta semana. Verificar manualmente.</div>
                 </div>
               </div>
             )}
-            <SectionCard className="mb-4" title="📉 Alunos sem progresso — ativos há +7 dias" right={<Pill className="bg-primary/15 text-primary">{alunosSemProgresso.length}</Pill>}>
+            <SectionCard className="mb-4" title="Alunos sem progresso — ativos há +7 dias" right={<Pill className="bg-primary/15 text-primary">{alunosSemProgresso.length}</Pill>}>
               {alunosSemProgresso.length > 0 ? (
                 <DataTable headers={['Nome', 'Produto', 'Telefone', 'Dias ativo', 'Ação']}>
                   {alunosSemProgresso.map((a, i) => {
@@ -793,7 +805,7 @@ export default function App() {
                     )
                   })}
                 </DataTable>
-              ) : <EmptyState msg="🎉 Nenhum aluno parado" />}
+              ) : <EmptyState msg="Nenhum aluno parado" />}
             </SectionCard>
           </>
         )}
@@ -801,19 +813,19 @@ export default function App() {
         {/* ════ CUSTO ════ */}
         {mainTab === 'custo' && (
           <>
-            <SectionTitle icon="💵" title="Custo do clone" sub={`claude-sonnet-4-6 · $3/MTok input + $15/MTok output · câmbio US$1 = R$${usdBrl.toFixed(2)} (tempo real)`} />
+            <SectionTitle icon={<Wallet />} title="Custo do clone" sub={`Gemini 3.5 Flash · $1,50/MTok input + $9,00/MTok output · câmbio US$1 = R${usdBrl.toFixed(2)} (tempo real)`} />
 
             <SectionCard
               className="mb-3.5"
-              title="Conta na Anthropic (Claude Console)"
-              right={!editandoSaldo && <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={abrirEdicaoSaldo}>✎ Atualizar</Button>}
+              title="Histórico da conta Anthropic (legado — não é mais o provedor ativo)"
+              right={!editandoSaldo && <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={abrirEdicaoSaldo}>Atualizar</Button>}
             >
               {!editandoSaldo ? (
                 <>
                   <div className={g(3)}>
-                    <Kpi label="Saldo estimado agora" value={`US$ ${saldoAoVivo.toFixed(2)}`} colorClass={saldoAoVivo < 2 ? 'bg-red-500' : 'bg-green-500'} icon="💳" sub={live ? 'ao vivo — atualiza sozinho' : 'descontando consumo desde o checkpoint'} />
-                    <Kpi label="Custo total desde o início" value={`US$ ${custoTotalAoVivo.toFixed(2)}`} colorClass="bg-primary" icon="📊" sub="ao vivo, a partir do checkpoint" />
-                    <Kpi label="Total depositado" value={`US$ ${(saldo?.total_depositado_usd ?? 0).toFixed(2)}`} colorClass="bg-sky-500" icon="🏦" />
+                    <Kpi label="Saldo estimado agora" value={`US$ ${saldoAoVivo.toFixed(2)}`} colorClass={saldoAoVivo < 2 ? 'bg-red-500' : 'bg-green-500'} icon={<CreditCard className="w-5 h-5" />} sub={live ? 'ao vivo — atualiza sozinho' : 'descontando consumo desde o checkpoint'} />
+                    <Kpi label="Custo total desde o início" value={`US$ ${custoTotalAoVivo.toFixed(2)}`} colorClass="bg-primary" icon={<BarChart3 className="w-5 h-5" />} sub="ao vivo, a partir do checkpoint" />
+                    <Kpi label="Total depositado" value={`US$ ${(saldo?.total_depositado_usd ?? 0).toFixed(2)}`} colorClass="bg-sky-500" icon={<Landmark className="w-5 h-5" />} />
                   </div>
                   <div className="text-[10px] text-muted-foreground">
                     Checkpoint manual (última vez que você conferiu no Console): saldo US$ {(saldo?.saldo_atual_usd ?? 0).toFixed(2)} · custo US$ {(saldo?.custo_total_usd ?? 0).toFixed(2)} · em {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}.
@@ -837,33 +849,41 @@ export default function App() {
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <Button size="sm" className="h-7 text-[11px]" disabled={salvandoSaldo} onClick={salvarSaldo}>{salvandoSaldo ? 'Salvando...' : '✓ Salvar'}</Button>
+                    <Button size="sm" className="h-7 text-[11px]" disabled={salvandoSaldo} onClick={salvarSaldo}>{salvandoSaldo ? 'Salvando...' : 'Salvar'}</Button>
                     <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setEditandoSaldo(false)}>Cancelar</Button>
                   </div>
                 </div>
               )}
             </SectionCard>
 
+            {GEMINI_FREE_TIER && (
+              <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-amber-400">Chave Gemini na camada gratuita — R$ 0 cobrado hoje.</strong> Os valores de custo abaixo são uma projeção de quanto custaria se o billing pago fosse ativado, não uma cobrança real. Vale ativar mesmo assim: a camada gratuita permite ao Google usar as conversas pra treinar modelos, e tem teto de requisições/dia que pode causar apagão como o da Anthropic.
+                </div>
+              </div>
+            )}
             <div className="bg-green-500/10 border border-green-500/20 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground">
-              ✅ <strong className="text-green-500">Custo estimado — {rotuloPeriodo}:</strong> US$ {custoUSD.toFixed(2)} · R$ {custoBRL.toFixed(2)} · {convPeriodo} conversas · {alunosUnicosPeriodo} alunos únicos
+              <strong className="text-green-500">Custo estimado (projeção paga) — {rotuloPeriodo}:</strong> US$ {custoUSD.toFixed(2)} · R$ {custoBRL.toFixed(2)} · {convPeriodo} conversas · {alunosUnicosPeriodo} alunos únicos
             </div>
             <div className={g(3)}>
               <Kpi
                 label={`Custo — ${rotuloPeriodo}`}
                 value={`US$ ${custoUSD.toFixed(2)}`}
-                colorClass="bg-primary" icon="📅"
+                colorClass="bg-primary" icon={<CalendarDays className="w-5 h-5" />}
                 sub={`R$ ${custoBRL.toFixed(2)} · ${convPeriodo} conv.`}
               />
               <Kpi
                 label="Estimativa mensal (ritmo atual)"
                 value={`US$ ${custoMesEstUSD.toFixed(2)}`}
-                colorClass="bg-sky-500" icon="🗓️"
+                colorClass="bg-sky-500" icon={<CalendarRange className="w-5 h-5" />}
                 sub={`R$ ${custoMesEstBRL.toFixed(2)} · baseado nos ${baseAtivos} alunos ativos reais`}
               />
-              <Kpi label="Custo por conversa (cache ativo)" value={`US$ ${CUSTO_CONV_USD.toFixed(4)}`} colorClass="bg-muted-foreground" icon="💬" sub="média — varia entre cache quente/frio" />
+              <Kpi label="Custo por conversa (cache ativo)" value={`US$ ${CUSTO_CONV_USD.toFixed(4)}`} colorClass="bg-muted-foreground" icon={<MessageSquare className="w-5 h-5" />} sub="média — varia entre cache quente/frio" />
             </div>
 
-            <SectionCard className="mb-3.5" title={<>Custo por dia — {rotuloPeriodo} (US$) {diaSel && <span className="text-primary font-semibold"> · {diaSel}</span>}</>} right={diaSel && <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setDiaSel(null)}>✕</Button>}>
+            <SectionCard className="mb-3.5" title={<>Custo por dia — {rotuloPeriodo} (US$) {diaSel && <span className="text-primary font-semibold"> · {diaSel}</span>}</>} right={diaSel && <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => setDiaSel(null)}>Limpar</Button>}>
               <ResponsiveContainer width="100%" height={140}>
                 <BarChart data={convDiarias.map(d => ({ ...d, custoUSD: parseFloat((d.total * CUSTO_CONV_USD).toFixed(4)) }))} barSize={mobile ? 12 : 18} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}
                   onClick={e => e?.activePayload && setDiaSel(e.activePayload[0]?.payload?.data)}>
@@ -880,7 +900,7 @@ export default function App() {
 
             <SectionCard className="mb-3.5" title="Projeção por escala — baseada em alunos ATIVOS de verdade">
               <div className="bg-accent rounded-lg px-3.5 py-2.5 mb-3.5 text-[11px] text-muted-foreground">
-                📐 <strong className="text-foreground">Base do cálculo:</strong> {baseProjecao}<br />
+                <strong className="text-foreground">Base do cálculo:</strong> {baseProjecao}<br />
                 <span className="text-muted-foreground">Antes esse cálculo usava o total de leads da base (496 cadastrados). Agora usa só quem realmente conversa com o clone.</span>
               </div>
               <DataTable headers={['Escala', 'Alunos', 'Conv/sem', 'Conv/mês', 'US$/sem', 'R$/sem', 'US$/mês', 'R$/mês']}>
@@ -912,7 +932,7 @@ export default function App() {
                 </BarChart>
               </ResponsiveContainer>
               <div className="text-[10px] text-muted-foreground mt-2.5">
-                * câmbio em tempo real: US$1 = R${usdBrl.toFixed(2)} · modelo: claude-sonnet-4-6 · prompt caching ativo
+                * câmbio em tempo real: US$1 = R${usdBrl.toFixed(2)} · modelo: Gemini 3.5 Flash · projeção de custo pago (chave atual está na camada gratuita)
               </div>
             </SectionCard>
           </>
@@ -921,11 +941,11 @@ export default function App() {
         {/* ════ INSPEÇÃO ════ */}
         {mainTab === 'inspecao' && (
           <>
-            <SectionTitle icon="🔎" title="Inspeção" sub="Falhas técnicas e alunos aguardando verificação manual — tudo que precisa da sua atenção" />
+            <SectionTitle icon={<Search />} title="Inspeção" sub="Falhas técnicas e alunos aguardando verificação manual — tudo que precisa da sua atenção" />
             <div className={g(3)}>
-              <Kpi label="Pendentes no total" value={totalPendentes} colorClass={totalPendentes > 0 ? 'bg-red-500' : 'bg-green-500'} icon="🔔" />
-              <Kpi label="Falhas técnicas" value={totalFalhas} colorClass="bg-primary" icon="⚠️" sub="registradas automaticamente pelo n8n" />
-              <Kpi label="Verificação manual" value={totalVerificacoes} colorClass="bg-sky-500" icon="🧑‍💻" sub="alunos que não achamos por telefone/email" />
+              <Kpi label="Pendentes no total" value={totalPendentes} colorClass={totalPendentes > 0 ? 'bg-red-500' : 'bg-green-500'} icon={<Bell className="w-5 h-5" />} />
+              <Kpi label="Falhas técnicas" value={totalFalhas} colorClass="bg-primary" icon={<AlertTriangle className="w-5 h-5" />} sub="registradas automaticamente pelo n8n" />
+              <Kpi label="Verificação manual" value={totalVerificacoes} colorClass="bg-sky-500" icon={<UserSearch className="w-5 h-5" />} sub="alunos que não achamos por telefone/email" />
             </div>
 
             <SectionCard
@@ -959,12 +979,12 @@ export default function App() {
                         <div className="flex gap-1.5">
                           {r.status === 'pendente' && !r.diagnostico && (
                             <Button size="sm" variant="outline" className="h-7 text-[11px]" disabled={diagnosticando[r.id]} onClick={() => diagnosticar(r)}>
-                              {diagnosticando[r.id] ? 'Diagnosticando...' : '🔬 Diagnosticar'}
+                              {diagnosticando[r.id] ? 'Diagnosticando...' : 'Diagnosticar'}
                             </Button>
                           )}
                           {r.status === 'pendente' && (
                             <Button size="sm" variant="outline" className="h-7 text-[11px] border-green-500/40 text-green-400 hover:bg-green-500/10 hover:text-green-400" onClick={() => marcarResolvido(r.id)}>
-                              ✓ Marcar resolvido
+                              Marcar resolvido
                             </Button>
                           )}
                         </div>
@@ -1003,7 +1023,7 @@ export default function App() {
                             </select>
                           </div>
                           <Button size="sm" className="h-7 text-[11px]" disabled={linkSalvando[r.id] || !linkForms[r.id]?.nome || !linkForms[r.id]?.email} onClick={() => vincularAluno(r)}>
-                            {linkSalvando[r.id] ? 'Salvando...' : '✓ Cadastrar e vincular'}
+                            {linkSalvando[r.id] ? 'Salvando...' : 'Cadastrar e vincular'}
                           </Button>
                         </div>
                       )}

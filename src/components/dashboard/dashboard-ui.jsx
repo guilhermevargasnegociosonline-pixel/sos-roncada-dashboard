@@ -1,5 +1,6 @@
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export function Kpi({ label, value, sub, colorClass, icon }) {
@@ -12,7 +13,7 @@ export function Kpi({ label, value, sub, colorClass, icon }) {
           <div className="text-2xl font-bold leading-none text-foreground">{value}</div>
           {sub && <div className="text-[11px] text-muted-foreground mt-1.5">{sub}</div>}
         </div>
-        {icon && <span className="text-xl opacity-40">{icon}</span>}
+        {icon && <span className="opacity-40 text-muted-foreground [&>svg]:w-5 [&>svg]:h-5">{icon}</span>}
       </CardContent>
     </Card>
   )
@@ -38,7 +39,7 @@ export function SectionTitle({ icon, title, sub }) {
   return (
     <div className="mb-5">
       <div className="flex items-center gap-2">
-        <span className="text-lg">{icon}</span>
+        {icon && <span className="text-primary [&>svg]:w-[18px] [&>svg]:h-[18px]">{icon}</span>}
         <span className="text-base font-bold tracking-tight text-foreground">{title}</span>
       </div>
       {sub && <div className="text-xs text-muted-foreground mt-1 pl-[26px]">{sub}</div>}
@@ -87,11 +88,12 @@ export function CopyPhoneButton({ value, copied, onCopy }) {
     <button
       onClick={() => onCopy(value)}
       className={cn(
-        'rounded-md border px-2.5 py-1 text-[11px] whitespace-nowrap transition-colors',
+        'rounded-md border px-2.5 py-1 text-[11px] whitespace-nowrap transition-colors inline-flex items-center gap-1',
         ok ? 'bg-green-500/10 border-green-500/40 text-green-400' : 'bg-accent border-border text-muted-foreground hover:text-foreground'
       )}
     >
-      {ok ? '✓ Copiado' : 'Copiar nº'}
+      {ok && <Check className="w-3 h-3" />}
+      {ok ? 'Copiado' : 'Copiar nº'}
     </button>
   )
 }
