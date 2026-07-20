@@ -6,8 +6,8 @@
 const VOCABULARIO_TEMA = [
   'traição', 'traiu', 'trair', 'infidelidade', 'amante',
   'separação', 'separados', 'divórcio', 'divorciar',
-  'silêncio', 'silencio', 'bloqueou', 'bloqueio', 'ignorando', 'ignorou',
-  'ciúme', 'ciumes', 'ciumento',
+  'silêncio', 'bloqueou', 'bloqueio', 'ignorando', 'ignorou',
+  'ciúme', 'ciúmes', 'ciumento',
   'filhos', 'filha', 'filho', 'crianças',
   'perdão', 'perdoar', 'arrependimento', 'arrependido',
   'reconciliação', 'reconciliar', 'restauração', 'restaurar', 'reconquista', 'reconquistar',
@@ -70,4 +70,19 @@ export function extrairPalavrasChave(frase, max = 3) {
   }
 
   return encontradas
+}
+
+// Retorna TODOS os termos do vocabulário do nicho encontrados na frase (sem limite e sem
+// fallback genérico) — usado pra contagem de frequência, não pra exibir como tag.
+export function extrairTermosVocabulario(frase) {
+  if (!frase) return []
+  const fraseNorm = normalizar(frase)
+  const encontrados = []
+  for (const termo of VOCABULARIO_TEMA) {
+    const termoNorm = normalizar(termo)
+    if (new RegExp(`\\b${termoNorm}\\b`).test(fraseNorm)) {
+      encontrados.push(termoNorm)
+    }
+  }
+  return encontrados
 }

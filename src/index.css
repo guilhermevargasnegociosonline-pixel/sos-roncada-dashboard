@@ -4,30 +4,41 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+  Paleta "Azul-marinho + Dourado" — redesign 2026-07-20.
+  Sistema fechado de cores com significado único cada:
+    primary (dourado)  = marca / destaque geral / produto Resgate
+    chart-3 (ameixa)   = produto CCC (secundário)
+    chart-2 (azul-aço) = informativo / neutro-secundário
+    green   = sucesso / progresso / resolvido
+    amber   = atenção / pendente
+    red     = crítico / risco / falha
+  Nunca usar uma cor fora do papel que ela representa aqui.
+*/
 :root {
-  --background: #090c14;
-  --foreground: #e8ecf4;
-  --card: #10141f;
-  --card-foreground: #e8ecf4;
-  --popover: #161c2c;
-  --popover-foreground: #e8ecf4;
-  --primary: #6366f1;
-  --primary-foreground: #f5f5ff;
-  --secondary: #161c2c;
-  --secondary-foreground: #e8ecf4;
-  --muted: #161c2c;
-  --muted-foreground: #8896ab;
-  --accent: #161c2c;
-  --accent-foreground: #e8ecf4;
-  --destructive: #ef4444;
-  --border: #1f2637;
-  --input: #1f2637;
-  --ring: #6366f1;
-  --chart-1: #6366f1;
-  --chart-2: #0ea5e9;
-  --chart-3: #a78bfa;
-  --chart-4: #22c55e;
-  --chart-5: #ef4444;
+  --background: #0a1420;
+  --foreground: #e9edf3;
+  --card: #101c2c;
+  --card-foreground: #e9edf3;
+  --popover: #16233a;
+  --popover-foreground: #e9edf3;
+  --primary: #c9974a;
+  --primary-foreground: #17110a;
+  --secondary: #16233a;
+  --secondary-foreground: #e9edf3;
+  --muted: #16233a;
+  --muted-foreground: #8a97a8;
+  --accent: #16233a;
+  --accent-foreground: #e9edf3;
+  --destructive: #dc4545;
+  --border: #1e2c40;
+  --input: #1e2c40;
+  --ring: #c9974a;
+  --chart-1: #c9974a;
+  --chart-2: #5b8fb0;
+  --chart-3: #ab93c4;
+  --chart-4: #3fae6c;
+  --chart-5: #dc4545;
   --radius: 0.75rem;
 }
 
@@ -62,6 +73,20 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
   --radius-2xl: calc(var(--radius) * 1.8);
+
+  /* remapeamento das cores nomeadas do Tailwind usadas no app — harmoniza com o
+     azul-marinho + dourado em vez do indigo genérico anterior. Mesmo papel de sempre
+     (azul = informativo, ameixa = CCC, verde = sucesso, âmbar = atenção, vermelho = crítico). */
+  --color-sky-500: #5b8fb0;
+  --color-sky-400: #7aa5c2;
+  --color-purple-400: #ab93c4;
+  --color-red-500: #dc4545;
+  --color-red-400: #e57373;
+  --color-red-950: #260e0e;
+  --color-green-500: #3fae6c;
+  --color-green-400: #5ec98a;
+  --color-amber-500: #e0973d;
+  --color-amber-400: #eba968;
 }
 
 html {

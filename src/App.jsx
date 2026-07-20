@@ -20,7 +20,7 @@ import {
 } from '@/components/dashboard/dashboard-ui'
 import { SidebarToggle, Sidebar } from '@/components/dashboard/sidebar'
 import { C } from '@/lib/chart-colors'
-import { extrairPalavrasChave } from '@/lib/keywords'
+import { extrairPalavrasChave, extrairTermosVocabulario } from '@/lib/keywords'
 import { supabase, DIAGNOSTICAR_WEBHOOK, NOTIFICAR_LIBERADO_WEBHOOK } from '@/lib/supabase'
 
 const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
@@ -336,6 +336,30 @@ export default function App() {
     )
     : frasesCopy[copyTab]
 
+  // frequência real de palavras-chave, direto das mensagens dos alunos (role=user) —
+  // hoje / últimos 7 dias / últimos 30 dias, tudo com a mesma base de dado ao vivo
+  const rankingPalavrasChave = (() => {
+    const hoje = hojeBrasiliaStr()
+    const d7 = new Date(hoje); d7.setDate(d7.getDate() - 6)
+    const d30 = new Date(hoje); d30.setDate(d30.getDate() - 29)
+    const semanaStr = d7.toISOString().split('T')[0]
+    const mesStr = d30.toISOString().split('T')[0]
+
+    const contagem = {}
+    todasConversas.forEach(c => {
+      if (c.role !== 'user' || !c.mensagem) return
+      const dia = paraDataBrasilia(c.criado_em)
+      if (!dia || dia < mesStr) return
+      extrairTermosVocabulario(c.mensagem).forEach(termo => {
+        if (!contagem[termo]) contagem[termo] = { termo, hoje: 0, semana: 0, mes: 0 }
+        contagem[termo].mes++
+        if (dia >= semanaStr) contagem[termo].semana++
+        if (dia === hoje) contagem[termo].hoje++
+      })
+    })
+    return Object.values(contagem).sort((a, b) => b.mes - a.mes).slice(0, 15)
+  })()
+
   const totalCCC = data ? (data.ccc_crise || 0) + (data.ccc_estaveis || 0) + (data.ccc_progresso || 0) : 0
   const totalResgate = data ? (data.resgate_crise || 0) + (data.resgate_estaveis || 0) + (data.resgate_progresso || 0) : 0
   const totalP = totalCCC + totalResgate
@@ -426,8 +450,30 @@ export default function App() {
     .slice(0, 10)
 
   // contagem ao vivo por produto — direto das conversas reais, não depende do lote semanal de análise
-  const resgateAtivosAoVivo = alunosAtivos.filter(a => a.produto === 'resgate').length
+  const resgateAtivosLista = alunosAtivos.filter(a => a.produto === 'resgate')
+  const resgateAtivosAoVivo = resgateAtivosLista.length
   const cccAtivosAoVivo = alunosAtivos.filter(a => a.produto === 'ccc').length
+  const tempoMedioResgateDias = resgateAtivosLista.length > 0
+    ? Math.round(resgateAtivosLista.reduce((soma, a) => soma + (a.criado_em ? (Date.now() - new Date(a.criado_em)) / 86400000 : 0), 0) / resgateAtivosLista.length)
+    : 0
+
+  // risco real explícito — usa o MESMO critério que o clone já usa pra acionar o CVV
+  // (não é heurística nova: se o bot mencionou 188/cvv.org.br, é porque a camada de
+  // crise dele já detectou risco de verdade naquela conversa)
+  const alunosPorTelefone = {}
+  alunos.forEach(a => { if (a.telefone) alunosPorTelefone[a.telefone.replace('+', '')] = a })
+  const ocorrenciasCrise = {}
+  todasConversas.forEach(c => {
+    if (c.role !== 'assistant' || !c.mensagem || !c.telefone) return
+    if (!c.mensagem.includes('188') && !c.mensagem.includes('cvv.org.br')) return
+    const tel = c.telefone.replace('+', '')
+    if (!ocorrenciasCrise[tel] || new Date(c.criado_em) > new Date(ocorrenciasCrise[tel].criado_em)) {
+      ocorrenciasCrise[tel] = { telefone: tel, mensagem: c.mensagem, criado_em: c.criado_em }
+    }
+  })
+  const leadsEmRisco = Object.values(ocorrenciasCrise)
+    .map(o => ({ ...o, aluno: alunosPorTelefone[o.telefone] }))
+    .sort((a, b) => new Date(b.criado_em) - new Date(a.criado_em))
 
   const agora = Date.now()
 
@@ -598,6 +644,7 @@ export default function App() {
               <Kpi label="Em crise" value={data?.resgate_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="última análise semanal" />
               <Kpi label="Estáveis" value={data?.resgate_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} sub="última análise semanal" />
               <Kpi label="Em progresso" value={data?.resgate_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} sub="avançando no método" />
+              <Kpi label="Tempo médio de programa" value={`${tempoMedioResgateDias}d`} colorClass="bg-sky-500" icon={<CalendarDays className="w-5 h-5" />} sub="média entre os alunos Resgate ativos" />
             </div>
             {totalResgate > 0 && resgateAtivosAoVivo > 0 && Math.abs(totalResgate - resgateAtivosAoVivo) > Math.max(3, resgateAtivosAoVivo * 0.25) && (
               <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg px-4 py-2.5 mb-4 text-[11px] text-muted-foreground">
@@ -781,6 +828,21 @@ export default function App() {
         {mainTab === 'copy' && (
           <>
             <SectionTitle icon={<MessageSquareQuote />} title="Painel de copy" sub="Frases reais dos alunos — ouro para comunicação, conteúdo e vendas" />
+            <SectionCard className="mb-4" title="Palavras-chave mais faladas — ao vivo, direto das conversas reais">
+              {rankingPalavrasChave.length > 0 ? (
+                <DataTable headers={['Palavra-chave', 'Hoje', 'Últimos 7 dias', 'Últimos 30 dias']}>
+                  {rankingPalavrasChave.map((k, i) => (
+                    <tr key={k.termo} className={`border-b border-border ${i === 0 ? 'bg-primary/5' : ''}`}>
+                      <td className="px-2.5 py-2 text-foreground font-medium capitalize">{k.termo}</td>
+                      <td className="px-2.5 py-2 text-foreground font-semibold">{k.hoje}</td>
+                      <td className="px-2.5 py-2 text-muted-foreground">{k.semana}</td>
+                      <td className="px-2.5 py-2 text-muted-foreground">{k.mes}</td>
+                    </tr>
+                  ))}
+                </DataTable>
+              ) : <EmptyState msg="Sem palavras-chave detectadas nos últimos 30 dias" />}
+            </SectionCard>
+
             <Tabs value={copyTab} onValueChange={setCopyTab} className="mb-4">
               <TabsList>
                 <TabsTrigger value="semana" className="text-xs">Esta semana</TabsTrigger>
@@ -833,18 +895,29 @@ export default function App() {
             <SectionTitle icon={<AlertTriangle />} title="Risco de churn" sub="Alunos que precisam de atenção imediata" />
             <div className={g(3)}>
               <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon={<BellOff className="w-5 h-5" />} />
-              <Kpi label="Em crise ativa" value={data?.total_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="mencionaram crise emocional" />
+              <Kpi label="Risco real (CVV acionado)" value={leadsEmRisco.length} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="ao vivo — mesmo critério que o clone usa" />
               <Kpi label="Sem progresso +7d" value={alunosSemProgresso.length} colorClass="bg-primary" icon={<TrendingDown className="w-5 h-5" />} sub="ativos há +7 dias" />
             </div>
-            {(data?.total_crise || 0) > 0 && (
-              <div className="bg-red-950/40 border border-red-500/30 rounded-xl px-4.5 py-3.5 mb-4 flex items-center gap-3">
-                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
-                <div>
-                  <div className="text-[13px] font-semibold text-red-400">Alunos em crise emocional detectada</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">{data?.total_crise} aluno(s) mencionaram palavras de crise nas conversas desta semana. Verificar manualmente.</div>
-                </div>
+
+            <SectionCard className="mb-4" title="Alunos em risco real — quem, não só quantos" right={<Pill className="bg-red-500/15 text-red-400">{leadsEmRisco.length}</Pill>}>
+              <div className="text-[11px] text-muted-foreground mb-3">
+                Critério: o próprio clone já indicou o CVV (188 / cvv.org.br) pra essa pessoa em algum momento — é o mesmo sinal de crise que o sistema usa ao vivo, não uma estimativa da análise semanal.
               </div>
-            )}
+              {leadsEmRisco.length > 0 ? (
+                <DataTable headers={['Nome', 'Telefone', 'Última ocorrência', 'O que o clone respondeu', 'Ação']}>
+                  {leadsEmRisco.map((r, i) => (
+                    <tr key={i} className="border-b border-border">
+                      <td className="px-2.5 py-2.5 text-foreground font-medium">{r.aluno?.nome || 'não identificado'}</td>
+                      <td className="px-2.5 py-2.5 text-muted-foreground font-mono text-[11px]">{r.telefone}</td>
+                      <td className="px-2.5 py-2.5 text-muted-foreground text-[11px] whitespace-nowrap">{new Date(r.criado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}</td>
+                      <td className="px-2.5 py-2.5 text-muted-foreground text-[11px] max-w-[260px]">{r.mensagem.slice(0, 120)}{r.mensagem.length > 120 ? '…' : ''}</td>
+                      <td className="px-2.5 py-2.5"><CopyPhoneButton value={r.telefone} copied={copied} onCopy={copyNum} /></td>
+                    </tr>
+                  ))}
+                </DataTable>
+              ) : <EmptyState msg="Nenhum caso de risco real detectado" />}
+            </SectionCard>
+
             <SectionCard className="mb-4" title="Alunos sem progresso — ativos há +7 dias" right={<Pill className="bg-primary/15 text-primary">{alunosSemProgresso.length}</Pill>}>
               {alunosSemProgresso.length > 0 ? (
                 <DataTable headers={['Nome', 'Produto', 'Telefone', 'Dias ativo', 'Ação']}>
