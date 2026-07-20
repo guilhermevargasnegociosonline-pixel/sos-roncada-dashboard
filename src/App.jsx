@@ -120,6 +120,7 @@ export default function App() {
   const [diaSel, setDiaSel] = useState(null)
   const [alunosAtivos, setAlunosAtivos] = useState([])
   const [convPorAluno, setConvPorAluno] = useState({})
+  const [ultimaMsgPorAluno, setUltimaMsgPorAluno] = useState({})
   const [revisoes, setRevisoes] = useState([])
   const [revisaoFiltro, setRevisaoFiltro] = useState('pendente')
   const [todasConversas, setTodasConversas] = useState([])
@@ -169,9 +170,15 @@ export default function App() {
       // mensagens reais (role=user) por aluno — base única usada em todo o resto dos cálculos,
       // pra "ativo", "média" e "ranking" nunca divergirem entre si por usarem contagens diferentes
       const porAluno = {}
+      const ultimaMsg = {}
       convArr.filter(c => c.role === 'user').forEach(c => {
-        if (c.aluno_id) porAluno[c.aluno_id] = (porAluno[c.aluno_id] || 0) + 1
+        if (!c.aluno_id) return
+        porAluno[c.aluno_id] = (porAluno[c.aluno_id] || 0) + 1
+        if (!ultimaMsg[c.aluno_id] || new Date(c.criado_em) > new Date(ultimaMsg[c.aluno_id])) {
+          ultimaMsg[c.aluno_id] = c.criado_em
+        }
       })
+      setUltimaMsgPorAluno(ultimaMsg)
       const totalConvUser = convArr.filter(c => c.role === 'user').length
       const mediaConvAluno = comMensagemReal.size > 0 ? totalConvUser / comMensagemReal.size : 5
 
@@ -370,7 +377,11 @@ export default function App() {
   const rangeDias = (() => {
     if (periodoModo === 'hoje') { const h = hojeBrasiliaStr(); return [h, h] }
     if (periodoModo === '7dias') { const h = hojeBrasiliaStr(); const d = new Date(h); d.setDate(d.getDate() - 6); return [d.toISOString().split('T')[0], h] }
-    return [rangeInicio || hojeBrasiliaStr(), rangeFim || hojeBrasiliaStr()]
+    const ini = rangeInicio || hojeBrasiliaStr()
+    const fim = rangeFim || hojeBrasiliaStr()
+    // se a data final vier antes da inicial (troca sem querer nos seletores), inverte em vez
+    // de silenciosamente zerar tudo — isso parecia "o filtro não atualiza" mas era intervalo invertido
+    return ini <= fim ? [ini, fim] : [fim, ini]
   })()
   const [rIni, rFim] = rangeDias
   const iniUTC = inicioDiaBrasiliaParaUTC(rIni)
@@ -457,6 +468,15 @@ export default function App() {
     ? Math.round(resgateAtivosLista.reduce((soma, a) => soma + (a.criado_em ? (Date.now() - new Date(a.criado_em)) / 86400000 : 0), 0) / resgateAtivosLista.length)
     : 0
 
+  // inativos ao vivo — alunos que já conversaram mas cuja ÚLTIMA mensagem real foi há mais de
+  // 3 dias, direto do timestamp real (substitui o total_inativos do lote semanal, que só
+  // atualiza uma vez por semana e não muda quando o dono troca o período no topo da tela)
+  const inativosAoVivo = alunosAtivos.filter(a => {
+    const ultima = ultimaMsgPorAluno[a.id]
+    if (!ultima) return false
+    return (Date.now() - new Date(ultima)) / 86400000 > 3
+  }).length
+
   // risco real explícito — usa o MESMO critério que o clone já usa pra acionar o CVV
   // (não é heurística nova: se o bot mencionou 188/cvv.org.br, é porque a camada de
   // crise dele já detectou risco de verdade naquela conversa)
@@ -535,6 +555,9 @@ export default function App() {
           )}
           <span className="text-[11px] text-muted-foreground">período: {rotuloPeriodo}</span>
         </div>
+        <div className="text-[10px] text-muted-foreground/70 -mt-3 mb-5">
+          Esse filtro afeta conversas, mensagens e custo. KPIs marcados <span className="text-foreground/80">"última análise semanal"</span> são de um processo separado (roda 1x por semana) e não mudam com esse período.
+        </div>
 
 
         {/* ════ GERAL ════ */}
@@ -543,7 +566,7 @@ export default function App() {
             <div className={g(4)}>
               <Kpi label="Alunos ativos (real)" value={alunosAtivos.length} colorClass="bg-primary" icon={<Users className="w-5 h-5" />} sub={`de ${alunos.length} cadastrados`} />
               <Kpi label={`Conversas — ${rotuloPeriodo}`} value={convPeriodo} colorClass="bg-sky-500" icon={<MessageSquare className="w-5 h-5" />} sub={`${alunosUnicosPeriodo} alunos únicos`} />
-              <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon={<UserX className="w-5 h-5" />} />
+              <Kpi label="Inativos +3 dias (ao vivo)" value={inativosAoVivo} colorClass="bg-red-500" icon={<UserX className="w-5 h-5" />} sub="direto da última mensagem real de cada aluno" />
               <Kpi
                 label={`Custo — ${rotuloPeriodo}`}
                 value={`US$ ${custoUSD.toFixed(2)}`}
@@ -643,7 +666,7 @@ export default function App() {
               <Kpi label="Alunos Resgate ativos (ao vivo)" value={resgateAtivosAoVivo} colorClass="bg-primary" icon={<Users className="w-5 h-5" />} sub="direto das conversas reais, não do lote semanal" />
               <Kpi label="Em crise" value={data?.resgate_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="última análise semanal" />
               <Kpi label="Estáveis" value={data?.resgate_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} sub="última análise semanal" />
-              <Kpi label="Em progresso" value={data?.resgate_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} sub="avançando no método" />
+              <Kpi label="Em progresso" value={data?.resgate_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} sub="última análise semanal" />
               <Kpi label="Tempo médio de programa" value={`${tempoMedioResgateDias}d`} colorClass="bg-sky-500" icon={<CalendarDays className="w-5 h-5" />} sub="média entre os alunos Resgate ativos" />
             </div>
             {totalResgate > 0 && resgateAtivosAoVivo > 0 && Math.abs(totalResgate - resgateAtivosAoVivo) > Math.max(3, resgateAtivosAoVivo * 0.25) && (
@@ -694,11 +717,17 @@ export default function App() {
         {mainTab === 'ccc' && (
           <>
             <SectionTitle icon={<HeartHandshake />} title="Como Convencer seu Cônjuge" sub="4 módulos · produto de entrada · porta para o Resgate" />
-            <div className={g(3)}>
-              <Kpi label="Em crise" value={data?.ccc_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} />
-              <Kpi label="Estáveis" value={data?.ccc_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} />
-              <Kpi label="Em progresso" value={data?.ccc_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} />
+            <div className={g(4)}>
+              <Kpi label="Alunos CCC ativos (ao vivo)" value={cccAtivosAoVivo} colorClass="bg-primary" icon={<Users className="w-5 h-5" />} sub="direto das conversas reais, não do lote semanal" />
+              <Kpi label="Em crise" value={data?.ccc_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="última análise semanal" />
+              <Kpi label="Estáveis" value={data?.ccc_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} sub="última análise semanal" />
+              <Kpi label="Em progresso" value={data?.ccc_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} sub="última análise semanal" />
             </div>
+            {totalCCC > 0 && cccAtivosAoVivo > 0 && Math.abs(totalCCC - cccAtivosAoVivo) > Math.max(3, cccAtivosAoVivo * 0.25) && (
+              <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg px-4 py-2.5 mb-4 text-[11px] text-muted-foreground">
+                <strong className="text-amber-400">Atenção:</strong> a última análise semanal contabilizou {totalCCC} alunos CCC, mas o número ao vivo agora é {cccAtivosAoVivo} — vale conferir se o lote semanal está desatualizado.
+              </div>
+            )}
             <div className={g(2)}>
               <SectionCard title="Estado emocional — CCC">
                 {totalCCC > 0 ? (
@@ -799,13 +828,13 @@ export default function App() {
               ) : <EmptyState />}
             </SectionCard>
 
-            <SectionCard title="Reengajamento — inativos para contato" right={<Pill className="bg-red-500/15 text-red-400">{data?.total_inativos || 0} inativos</Pill>}>
-              <div className="text-[11px] text-muted-foreground mb-3">Alunos que podem precisar de uma mensagem manual do Pedro</div>
-              {fantasmas.length > 0 || (data?.total_inativos || 0) > 0 ? (
+            <SectionCard title="Reengajamento — inativos para contato" right={<Pill className="bg-red-500/15 text-red-400">{fantasmas.length + inativosAoVivo} ao vivo</Pill>}>
+              <div className="text-[11px] text-muted-foreground mb-3">Alunos que podem precisar de uma mensagem manual do Pedro — nunca conversaram, ou já conversaram mas sumiram há +3 dias (tudo calculado ao vivo, não do lote semanal)</div>
+              {fantasmas.length > 0 || inativosAoVivo > 0 ? (
                 <DataTable headers={['Nome', 'Produto', 'Telefone', 'Status', 'Ação']}>
-                  {[...fantasmas, ...alunos.filter(a => !fantasmas.find(f => f.id === a.id)).filter(a => {
-                    const dias = a.criado_em ? Math.floor((agora - new Date(a.criado_em)) / 86400000) : 0
-                    return dias > 3 && !convPorAluno[a.id]
+                  {[...fantasmas, ...alunosAtivos.filter(a => {
+                    const ultima = ultimaMsgPorAluno[a.id]
+                    return ultima && (Date.now() - new Date(ultima)) / 86400000 > 3
                   })].slice(0, 15).map((a, i) => {
                     const isFantasma = fantasmas.find(f => f.id === a.id)
                     return (
@@ -894,7 +923,7 @@ export default function App() {
           <>
             <SectionTitle icon={<AlertTriangle />} title="Risco de churn" sub="Alunos que precisam de atenção imediata" />
             <div className={g(3)}>
-              <Kpi label="Inativos +3 dias" value={data?.total_inativos || 0} colorClass="bg-red-500" icon={<BellOff className="w-5 h-5" />} />
+              <Kpi label="Inativos +3 dias (ao vivo)" value={inativosAoVivo} colorClass="bg-red-500" icon={<BellOff className="w-5 h-5" />} sub="direto da última mensagem real de cada aluno" />
               <Kpi label="Risco real (CVV acionado)" value={leadsEmRisco.length} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="ao vivo — mesmo critério que o clone usa" />
               <Kpi label="Sem progresso +7d" value={alunosSemProgresso.length} colorClass="bg-primary" icon={<TrendingDown className="w-5 h-5" />} sub="ativos há +7 dias" />
             </div>
