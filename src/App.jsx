@@ -39,7 +39,7 @@ const CUSTO_CONV_USD = 0.0140
 // por isso fica fixo no código em vez de puxar de uma tabela que não é mais atualizada por esse provedor.
 const ANTHROPIC_HISTORICO = {
   saldo_final_usd: 5.87,
-  custo_total_usd: 34.18,
+  custo_total_usd: 40, // valor redondo confirmado pelo cliente (~US$40 gastos no total)
   total_depositado_usd: 39.68,
   congelado_em: '2026-07-18T19:38:50-03:00',
 }
