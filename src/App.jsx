@@ -8,8 +8,7 @@ import {
   LayoutDashboard, LifeBuoy, HeartHandshake, Activity, MessageSquareQuote,
   AlertTriangle, Wallet, Search, Users, MessageSquare, UserX, Scale,
   TrendingUp, Users2, BellOff, TrendingDown, CreditCard, BarChart3,
-  Landmark, CalendarDays, CalendarRange, Bell, UserSearch, Pencil,
-  FlaskConical, Check, PartyPopper,
+  Landmark, CalendarDays, CalendarRange, Bell, UserSearch, SearchX,
 } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
@@ -21,6 +20,7 @@ import {
 } from '@/components/dashboard/dashboard-ui'
 import { SidebarToggle, Sidebar } from '@/components/dashboard/sidebar'
 import { C } from '@/lib/chart-colors'
+import { extrairPalavrasChave } from '@/lib/keywords'
 import { supabase, DIAGNOSTICAR_WEBHOOK, NOTIFICAR_LIBERADO_WEBHOOK } from '@/lib/supabase'
 
 const SUPABASE_URL = 'https://bnkesshzstryzfoipres.supabase.co/rest/v1'
@@ -29,15 +29,20 @@ const H = { 'Authorization': `Bearer ${SUPABASE_KEY}`, 'apikey': SUPABASE_KEY }
 
 // Provedor ativo desde 2026-07-19: Gemini 3.5 Flash (migração emergencial, conta Anthropic sem crédito)
 // Preço oficial Gemini 3.5 Flash — $1.50/MTok input + $9.00/MTok output (raciocínio incluso na saída)
-// Calibrado com dados reais medidos em chamada de teste direta à API nesta sessão
-const CUSTO_INPUT = 1.5 / 1_000_000
-const CUSTO_OUTPUT = 9 / 1_000_000
-const TOK_IN = 7700
-const TOK_OUT = 500
-const CUSTO_CONV_USD = (TOK_IN * CUSTO_INPUT) + (TOK_OUT * CUSTO_OUTPUT)
-// A chave em uso está na camada gratuita do Gemini (sem cobrança até estourar a cota diária) —
-// os valores acima são a estimativa de custo SE o billing pago for ativado, não uma cobrança real hoje.
-const GEMINI_FREE_TIER = true
+// Billing pré-pago ativado em 2026-07-19 (mesmo dia) — consumo real passou a ser debitado do saldo.
+// Estimativa calibrada com tráfego real medido nesta sessão: com cache quente (uso concorrente, que
+// é o padrão real de tráfego aqui) o custo médio ficou em ~US$0,0113/msg; sem cache, ~US$0,0168/msg.
+// Usamos a média entre os dois cenários, já que a proporção real de cache hit/miss varia com o
+// volume simultâneo de alunos e não dá pra cravar sem dado de billing real vindo do Google.
+const CUSTO_CONV_USD = 0.0140
+// Histórico congelado da conta Anthropic (provedor anterior, migração em 2026-07-19) — não muda mais,
+// por isso fica fixo no código em vez de puxar de uma tabela que não é mais atualizada por esse provedor.
+const ANTHROPIC_HISTORICO = {
+  saldo_final_usd: 5.87,
+  custo_total_usd: 34.18,
+  total_depositado_usd: 39.68,
+  congelado_em: '2026-07-18T19:38:50-03:00',
+}
 
 // o Supabase (PostgREST) limita cada request a no máximo 1000 linhas por padrão,
 // mesmo se a gente pedir um limit maior — por isso pagina até acabar.
@@ -107,6 +112,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [mainTab, setMainTab] = useState('geral')
   const [copyTab, setCopyTab] = useState('semana')
+  const [copyBusca, setCopyBusca] = useState('')
   const [fantasmas, setFantasmas] = useState([])
   const [alunosSemProgresso, setAlunosSemProgresso] = useState([])
   const [copied, setCopied] = useState(null)
@@ -155,28 +161,28 @@ export default function App() {
       setAlunos(alunosArr)
       setTodasConversas(convArr)
 
-      const comConv = new Set(convArr.map(c => c.aluno_id))
-      setFantasmas(alunosArr.filter(a => !comConv.has(a.id)))
+      // "ativo" exige mensagem role=user de verdade — só ter recebido uma mensagem automática
+      // (ex: boas-vindas) não conta como engajamento real
+      const comMensagemReal = new Set(convArr.filter(c => c.role === 'user').map(c => c.aluno_id))
+      setFantasmas(alunosArr.filter(a => !comMensagemReal.has(a.id)))
 
-      const totalConvUser = convArr.filter(c => c.role === 'user').length
-      const totalAlunosComConv = new Set(convArr.filter(c => c.role === 'user').map(c => c.aluno_id)).size
-      const mediaConvAluno = totalAlunosComConv > 0 ? totalConvUser / totalAlunosComConv : 5
-      const porAlunoTemp = {}
-      convArr.filter(c => c.role === 'user').forEach(c => {
-        if (c.aluno_id) porAlunoTemp[c.aluno_id] = (porAlunoTemp[c.aluno_id] || 0) + 1
-      })
-      setAlunosSemProgresso(alunosArr.filter(a => {
-        const dias = a.criado_em ? Math.floor((Date.now() - new Date(a.criado_em)) / 86400000) : 0
-        const msgs = porAlunoTemp[a.id] || 0
-        return dias > 7 && comConv.has(a.id) && msgs < (mediaConvAluno * 0.3)
-      }))
-
+      // mensagens reais (role=user) por aluno — base única usada em todo o resto dos cálculos,
+      // pra "ativo", "média" e "ranking" nunca divergirem entre si por usarem contagens diferentes
       const porAluno = {}
       convArr.filter(c => c.role === 'user').forEach(c => {
         if (c.aluno_id) porAluno[c.aluno_id] = (porAluno[c.aluno_id] || 0) + 1
       })
+      const totalConvUser = convArr.filter(c => c.role === 'user').length
+      const mediaConvAluno = comMensagemReal.size > 0 ? totalConvUser / comMensagemReal.size : 5
+
+      setAlunosSemProgresso(alunosArr.filter(a => {
+        const dias = a.criado_em ? Math.floor((Date.now() - new Date(a.criado_em)) / 86400000) : 0
+        const msgs = porAluno[a.id] || 0
+        return dias > 7 && comMensagemReal.has(a.id) && msgs < (mediaConvAluno * 0.3)
+      }))
+
       setConvPorAluno(porAluno)
-      setAlunosAtivos(alunosArr.filter(a => comConv.has(a.id) || Object.keys(porAluno).includes(a.id)))
+      setAlunosAtivos(alunosArr.filter(a => comMensagemReal.has(a.id)))
 
       // auto-resolver falhas técnicas que já sumiram sozinhas: se o mesmo telefone teve
       // uma mensagem depois da falha registrada, o problema provavelmente já foi superado
@@ -311,9 +317,24 @@ export default function App() {
   const topDores = data ? parse('top_dores') : []
   const topModulos = data ? parse('top_modulos') : []
   const frasesCopy = (() => {
-    try { const f = JSON.parse(data?.frases_copy || '{}'); const s = arr => [...(arr || [])].sort((a, b) => (b.citacoes || 0) - (a.citacoes || 0)); return { semana: s(f.semana), mes: s(f.mes) } }
+    try {
+      const f = JSON.parse(data?.frases_copy || '{}')
+      const s = arr => [...(arr || [])]
+        .sort((a, b) => (b.citacoes || 0) - (a.citacoes || 0))
+        .map(item => ({ ...item, palavrasChave: extrairPalavrasChave(item.frase) }))
+      return { semana: s(f.semana), mes: s(f.mes) }
+    }
     catch { return { semana: [], mes: [] } }
   })()
+
+  const copyBuscaNorm = copyBusca.trim().toLowerCase()
+  const frasesCopyFiltradas = copyBuscaNorm
+    ? frasesCopy[copyTab].filter(f =>
+      f.frase.toLowerCase().includes(copyBuscaNorm) ||
+      f.palavrasChave.some(k => k.toLowerCase().includes(copyBuscaNorm)) ||
+      (f.categoria || '').toLowerCase().includes(copyBuscaNorm)
+    )
+    : frasesCopy[copyTab]
 
   const totalCCC = data ? (data.ccc_crise || 0) + (data.ccc_estaveis || 0) + (data.ccc_progresso || 0) : 0
   const totalResgate = data ? (data.resgate_crise || 0) + (data.resgate_estaveis || 0) + (data.resgate_progresso || 0) : 0
@@ -367,8 +388,6 @@ export default function App() {
     return { dia: dia.slice(5), data: dia, total: doDia.length, unicos: new Set(doDia.map(c => c.aluno_id)).size }
   })
 
-  const semanasComDados = allAnalises.filter(r => (r.total_conversas || 0) > 0)
-
   const convPorAlunoMedia = alunosAtivos.length > 0 ? (todasConversas.filter(c => c.role === 'user').length / alunosAtivos.length) : 0
   const semanasNoMes = 4
   const baseAtivos = alunosAtivos.length
@@ -405,6 +424,10 @@ export default function App() {
     .map(a => ({ ...a, msgs: convPorAluno[a.id] || 0 }))
     .sort((a, b) => b.msgs - a.msgs)
     .slice(0, 10)
+
+  // contagem ao vivo por produto — direto das conversas reais, não depende do lote semanal de análise
+  const resgateAtivosAoVivo = alunosAtivos.filter(a => a.produto === 'resgate').length
+  const cccAtivosAoVivo = alunosAtivos.filter(a => a.produto === 'ccc').length
 
   const agora = Date.now()
 
@@ -570,11 +593,17 @@ export default function App() {
         {mainTab === 'resgate' && (
           <>
             <SectionTitle icon={<LifeBuoy />} title="Resgate — Método Completo" sub="7 módulos · programa integral de restauração conjugal" />
-            <div className={g(3)}>
-              <Kpi label="Em crise" value={data?.resgate_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} />
-              <Kpi label="Estáveis" value={data?.resgate_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} />
+            <div className={g(4)}>
+              <Kpi label="Alunos Resgate ativos (ao vivo)" value={resgateAtivosAoVivo} colorClass="bg-primary" icon={<Users className="w-5 h-5" />} sub="direto das conversas reais, não do lote semanal" />
+              <Kpi label="Em crise" value={data?.resgate_crise || 0} colorClass="bg-red-500" icon={<AlertTriangle className="w-5 h-5" />} sub="última análise semanal" />
+              <Kpi label="Estáveis" value={data?.resgate_estaveis || 0} colorClass="bg-primary" icon={<Scale className="w-5 h-5" />} sub="última análise semanal" />
               <Kpi label="Em progresso" value={data?.resgate_progresso || 0} colorClass="bg-green-500" icon={<TrendingUp className="w-5 h-5" />} sub="avançando no método" />
             </div>
+            {totalResgate > 0 && resgateAtivosAoVivo > 0 && Math.abs(totalResgate - resgateAtivosAoVivo) > Math.max(3, resgateAtivosAoVivo * 0.25) && (
+              <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg px-4 py-2.5 mb-4 text-[11px] text-muted-foreground">
+                <strong className="text-amber-400">Atenção:</strong> a última análise semanal contabilizou {totalResgate} alunos Resgate, mas o número ao vivo agora é {resgateAtivosAoVivo} — diferença grande o suficiente pra valer conferir se o lote semanal está desatualizado.
+              </div>
+            )}
             <div className={g(2)}>
               <SectionCard title="Estado emocional — Resgate">
                 <ResponsiveContainer width="100%" height={150}>
@@ -643,17 +672,17 @@ export default function App() {
                   </ResponsiveContainer>
                 ) : <EmptyState msg="Aguardando primeiros alunos CCC conversarem" />}
               </SectionCard>
-              <SectionCard title="Sinais de upgrade para o Resgate">
-                <div className="text-[11px] text-muted-foreground mb-3">Alunos CCC que mencionaram temas do programa completo</div>
+              <SectionCard title="CCC — ao vivo">
+                <div className="text-[11px] text-muted-foreground mb-3">Contagem real, direto das conversas — não depende do lote semanal de análise</div>
                 <div className="bg-accent rounded-lg px-3.5 py-3 mb-2.5">
                   <div className="flex justify-between items-center">
                     <div>
-                      <div className="text-xl font-bold text-primary">{Math.round(totalCCC * 0.3)}</div>
-                      <div className="text-[11px] text-muted-foreground mt-0.5">potenciais upgrades</div>
+                      <div className="text-xl font-bold text-primary">{cccAtivosAoVivo}</div>
+                      <div className="text-[11px] text-muted-foreground mt-0.5">alunos CCC ativos agora</div>
                     </div>
                     <div className="text-right">
-                      <div className="text-sm font-semibold text-green-500">R$ {(Math.round(totalCCC * 0.3) * 150).toLocaleString('pt-BR')}</div>
-                      <div className="text-[10px] text-muted-foreground">receita potencial</div>
+                      <div className="text-sm font-semibold text-foreground">{totalCCC}</div>
+                      <div className="text-[10px] text-muted-foreground">na última análise semanal</div>
                     </div>
                   </div>
                 </div>
@@ -758,9 +787,28 @@ export default function App() {
                 <TabsTrigger value="mes" className="text-xs">Este mês</TabsTrigger>
               </TabsList>
             </Tabs>
-            <SectionCard title={copyTab === 'semana' ? 'Ranking semanal — por citações' : 'Ranking mensal — por citações'} right={<Pill className="bg-primary/15 text-primary">{frasesCopy[copyTab].length} frases</Pill>}>
-              {frasesCopy[copyTab].length > 0 ? frasesCopy[copyTab].map((f, i) => (
-                <div key={i} className={`py-3.5 flex gap-3.5 items-start ${i < frasesCopy[copyTab].length - 1 ? 'border-b border-border' : ''}`}>
+
+            <div className="relative mb-4">
+              <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
+              <Input
+                placeholder="Buscar por palavra-chave, tema ou trecho da frase..."
+                className="h-9 text-xs bg-accent border-border pl-8 pr-8"
+                value={copyBusca}
+                onChange={e => setCopyBusca(e.target.value)}
+              />
+              {copyBusca && (
+                <button onClick={() => setCopyBusca('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  <SearchX className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <SectionCard
+              title={copyTab === 'semana' ? 'Ranking semanal — por citações' : 'Ranking mensal — por citações'}
+              right={<Pill className="bg-primary/15 text-primary">{frasesCopyFiltradas.length} de {frasesCopy[copyTab].length} frases</Pill>}
+            >
+              {frasesCopyFiltradas.length > 0 ? frasesCopyFiltradas.map((f, i) => (
+                <div key={i} className={`py-3.5 flex gap-3.5 items-start ${i < frasesCopyFiltradas.length - 1 ? 'border-b border-border' : ''}`}>
                   <div className={`min-w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${i === 0 ? 'bg-primary/20 text-primary' : 'bg-accent text-muted-foreground'}`}>#{i + 1}</div>
                   <div className="flex-1">
                     <div className="text-[13px] text-foreground leading-relaxed italic mb-2">"{f.frase}"</div>
@@ -768,10 +816,13 @@ export default function App() {
                       <Pill className="bg-primary/15 text-primary">{f.citacoes} citações</Pill>
                       {f.categoria && <Pill className="bg-muted text-muted-foreground">{f.categoria}</Pill>}
                       {f.produto && <ProductBadge p={f.produto} />}
+                      {f.palavrasChave.map((k, ki) => (
+                        <Pill key={ki} className="bg-sky-500/15 text-sky-400">#{k}</Pill>
+                      ))}
                     </div>
                   </div>
                 </div>
-              )) : <EmptyState />}
+              )) : <EmptyState msg={copyBusca ? 'Nenhuma frase bate com essa busca' : undefined} />}
             </SectionCard>
           </>
         )}
@@ -820,21 +871,31 @@ export default function App() {
           <>
             <SectionTitle icon={<Wallet />} title="Custo do clone" sub={`Gemini 3.5 Flash · $1,50/MTok input + $9,00/MTok output · câmbio US$1 = R${usdBrl.toFixed(2)} (tempo real)`} />
 
+            <div className="bg-green-500/10 border border-green-500/25 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground flex items-start gap-2.5">
+              <CreditCard className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="text-green-400">Billing pré-pago ativo desde 19/07/2026 — consumo real está sendo debitado.</strong> A chave deixou de estar na camada gratuita nesse dia. O saldo abaixo é o checkpoint manual mais recente — confira o valor real em <span className="font-mono">aistudio.google.com</span> → Faturamento → Pré-pagamento e clique em "Atualizar" pra manter isso calibrado com a realidade.
+              </div>
+            </div>
+
             <SectionCard
               className="mb-3.5"
-              title="Histórico da conta Anthropic (legado — não é mais o provedor ativo)"
+              title="Saldo Gemini (pré-pago) — provedor ativo"
               right={!editandoSaldo && <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={abrirEdicaoSaldo}>Atualizar</Button>}
             >
               {!editandoSaldo ? (
                 <>
                   <div className={g(3)}>
                     <Kpi label="Saldo estimado agora" value={`US$ ${saldoAoVivo.toFixed(2)}`} colorClass={saldoAoVivo < 2 ? 'bg-red-500' : 'bg-green-500'} icon={<CreditCard className="w-5 h-5" />} sub={live ? 'ao vivo — atualiza sozinho' : 'descontando consumo desde o checkpoint'} />
-                    <Kpi label="Custo total desde o início" value={`US$ ${custoTotalAoVivo.toFixed(2)}`} colorClass="bg-primary" icon={<BarChart3 className="w-5 h-5" />} sub="ao vivo, a partir do checkpoint" />
-                    <Kpi label="Total depositado" value={`US$ ${(saldo?.total_depositado_usd ?? 0).toFixed(2)}`} colorClass="bg-sky-500" icon={<Landmark className="w-5 h-5" />} />
+                    <Kpi label="Custo total desde o checkpoint" value={`US$ ${custoTotalAoVivo.toFixed(2)}`} colorClass="bg-primary" icon={<BarChart3 className="w-5 h-5" />} sub="ao vivo, estimado" />
+                    <Kpi label="Total depositado (pré-pago)" value={`US$ ${(saldo?.total_depositado_usd ?? 0).toFixed(2)}`} colorClass="bg-sky-500" icon={<Landmark className="w-5 h-5" />} />
                   </div>
                   <div className="text-[10px] text-muted-foreground">
-                    Checkpoint manual (última vez que você conferiu no Console): saldo US$ {(saldo?.saldo_atual_usd ?? 0).toFixed(2)} · custo US$ {(saldo?.custo_total_usd ?? 0).toFixed(2)} · em {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}.
-                    Desde então, {gastosDesdeCheckpoint > 0 ? `estimo US$ ${gastosDesdeCheckpoint.toFixed(2)} a mais de consumo real` : 'nenhum consumo novo'} — os números acima já descontam isso automaticamente. Confira no Console de vez em quando e clique em "Atualizar" pra recalibrar.
+                    Checkpoint manual (última vez que você conferiu no AI Studio): saldo US$ {(saldo?.saldo_atual_usd ?? 0).toFixed(2)} · custo acumulado US$ {(saldo?.custo_total_usd ?? 0).toFixed(2)} · em {saldo?.atualizado_em ? new Date(saldo.atualizado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}.
+                    Desde então, {gastosDesdeCheckpoint > 0 ? `estimo US$ ${gastosDesdeCheckpoint.toFixed(2)} a mais de consumo real` : 'nenhum consumo novo'} — os números acima já descontam isso automaticamente. Confira no AI Studio de vez em quando e clique em "Atualizar" pra recalibrar com o valor real.
+                    {(saldo?.atualizado_em && saldo.atualizado_em < '2026-07-19') && (
+                      <div className="mt-1.5 text-amber-400">⚠ Esse checkpoint ainda é de antes da migração pra Gemini — os números de saldo/depósito estão desatualizados. Clique em "Atualizar" e confira o valor real no AI Studio.</div>
+                    )}
                   </div>
                 </>
               ) : (
@@ -861,16 +922,12 @@ export default function App() {
               )}
             </SectionCard>
 
-            {GEMINI_FREE_TIER && (
-              <div className="bg-amber-500/10 border border-amber-500/25 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground flex items-start gap-2.5">
-                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-amber-400">Chave Gemini na camada gratuita — R$ 0 cobrado hoje.</strong> Os valores de custo abaixo são uma projeção de quanto custaria se o billing pago fosse ativado, não uma cobrança real. Vale ativar mesmo assim: a camada gratuita permite ao Google usar as conversas pra treinar modelos, e tem teto de requisições/dia que pode causar apagão como o da Anthropic.
-                </div>
-              </div>
-            )}
-            <div className="bg-green-500/10 border border-green-500/20 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground">
-              <strong className="text-green-500">Custo estimado (projeção paga) — {rotuloPeriodo}:</strong> US$ {custoUSD.toFixed(2)} · R$ {custoBRL.toFixed(2)} · {convPeriodo} conversas · {alunosUnicosPeriodo} alunos únicos
+            <div className="bg-accent border border-border rounded-lg px-4 py-2.5 mb-3.5 text-[11px] text-muted-foreground">
+              <strong className="text-foreground">Histórico Anthropic (provedor anterior, congelado em {new Date(ANTHROPIC_HISTORICO.congelado_em).toLocaleDateString('pt-BR')}):</strong> saldo final US$ {ANTHROPIC_HISTORICO.saldo_final_usd.toFixed(2)} · custo total US$ {ANTHROPIC_HISTORICO.custo_total_usd.toFixed(2)} · depositado US$ {ANTHROPIC_HISTORICO.total_depositado_usd.toFixed(2)}. Não muda mais — só referência de quanto foi gasto antes da migração pro Gemini.
+            </div>
+
+            <div className="bg-sky-500/10 border border-sky-500/20 rounded-lg px-4 py-3 mb-3.5 text-xs text-muted-foreground">
+              <strong className="text-sky-400">Custo estimado (Gemini, com billing ativo) — {rotuloPeriodo}:</strong> US$ {custoUSD.toFixed(2)} · R$ {custoBRL.toFixed(2)} · {convPeriodo} conversas · {alunosUnicosPeriodo} alunos únicos
             </div>
             <div className={g(3)}>
               <Kpi
@@ -937,7 +994,7 @@ export default function App() {
                 </BarChart>
               </ResponsiveContainer>
               <div className="text-[10px] text-muted-foreground mt-2.5">
-                * câmbio em tempo real: US$1 = R${usdBrl.toFixed(2)} · modelo: Gemini 3.5 Flash · projeção de custo pago (chave atual está na camada gratuita)
+                * câmbio em tempo real: US$1 = R${usdBrl.toFixed(2)} · modelo: Gemini 3.5 Flash · billing pré-pago ativo, custo estimado com base no tráfego real
               </div>
             </SectionCard>
           </>
